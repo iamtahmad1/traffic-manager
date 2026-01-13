@@ -1,0 +1,16 @@
+# src/metrics/__init__.py
+from .metrics import (
+    RESOLVE_REQUESTS_TOTAL,
+    CACHE_HIT_TOTAL,
+    CACHE_MISS_TOTAL,
+    NEGATIVE_CACHE_HIT_TOTAL,
+    RESOLVE_LATENCY_SECONDS,
+)
+
+__all__ = [
+    "RESOLVE_REQUESTS_TOTAL",
+    "CACHE_HIT_TOTAL",
+    "CACHE_MISS_TOTAL",
+    "NEGATIVE_CACHE_HIT_TOTAL",
+    "RESOLVE_LATENCY_SECONDS",
+]
