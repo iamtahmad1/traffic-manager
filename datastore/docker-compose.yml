@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      # Broker identification
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      
+      # Network configuration
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      
+      # Replication settings
+      # Note: With a single broker, replication factor is limited to 1
+      # For replication factor 3, you would need 3 Kafka brokers
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      
+      # Topic auto-creation
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Default replication factor for auto-created topics (limited by number of brokers)
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      
+      # Performance and reliability
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7 days
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824  # 1GB
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+      
+      # Memory settings
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+volumes:
+  postgres_data:
+  redis_data:
+  zookeeper_data:
+  zookeeper_logs:
+  kafka_data:
