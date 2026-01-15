@@ -78,9 +78,26 @@ services:
     volumes:
       - kafka_data:/var/lib/kafka/data
 
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    ports:
+      - "${MONGODB_PORT:-27017}:27017"
+    env_file:
+      - .env
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-admin_password}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB:-audit_db}
+    volumes:
+      - mongodb_data:/data/db
+    command: ["mongod", "--wiredTigerCacheSizeGB", "1"]
+
 volumes:
   postgres_data:
   redis_data:
   zookeeper_data:
   zookeeper_logs:
   kafka_data:
+  mongodb_data:

@@ -80,6 +80,39 @@ class RedisConfig:
 
 
 @dataclass
+class MongoDBConfig:
+    """
+    MongoDB audit store configuration settings.
+    
+    MongoDB is used for storing audit logs and change history.
+    It provides flexible schema and efficient querying for audit data.
+    """
+    # MongoDB server host
+    host: str = os.getenv("MONGODB_HOST", "localhost")
+    
+    # MongoDB server port (default is 27017)
+    port: int = int(os.getenv("MONGODB_PORT", "27017"))
+    
+    # Database name - which database to use for audit logs
+    name: str = os.getenv("MONGODB_DB", "audit_db")
+    
+    # Username for authentication
+    user: str = os.getenv("MONGODB_USER", "admin")
+    
+    # Password for authentication
+    password: str = os.getenv("MONGODB_PASSWORD", "admin_password")
+    
+    # Collection name for route audit events
+    audit_collection: str = os.getenv("MONGODB_AUDIT_COLLECTION", "route_events")
+    
+    # Connection timeout - how long to wait when connecting to MongoDB
+    connect_timeout_ms: int = int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "5000"))
+    
+    # Server selection timeout - how long to wait for server selection
+    server_selection_timeout_ms: int = int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000"))
+
+
+@dataclass
 class KafkaConfig:
     """
     Kafka event streaming configuration.
@@ -173,6 +206,9 @@ class Settings:
     # Redis cache configuration
     redis: RedisConfig = RedisConfig()
     
+    # MongoDB audit store configuration
+    mongodb: MongoDBConfig = MongoDBConfig()
+    
     # Kafka configuration
     kafka: KafkaConfig = KafkaConfig()
     
@@ -206,6 +242,12 @@ class Settings:
         # Validate Redis settings
         if not (1 <= self.redis.port <= 65535):
             raise ValueError(f"REDIS_PORT must be between 1 and 65535, got {self.redis.port}")
+        
+        # Validate MongoDB settings
+        if not (1 <= self.mongodb.port <= 65535):
+            raise ValueError(f"MONGODB_PORT must be between 1 and 65535, got {self.mongodb.port}")
+        if not self.mongodb.name:
+            raise ValueError("MONGODB_DB is required")
         
         # Validate Kafka settings
         if not self.kafka.bootstrap_servers:

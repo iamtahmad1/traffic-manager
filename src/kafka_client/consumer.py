@@ -13,6 +13,7 @@ from config import settings
 from cache import get_redis_client, close_redis_client
 from db.pool import get_connection, initialize_pool, close_pool
 from service.routing import resolve_endpoint, RouteNotFoundError
+from mongodb_client import get_mongodb_client, close_mongodb_client, insert_audit_event
 
 logger = get_logger(__name__)
 
@@ -108,41 +109,76 @@ def _handle_cache_warming(event: Dict[str, Any]) -> None:
 def _handle_audit_log(event: Dict[str, Any]) -> None:
     """
     Audit / Change Log Consumer (EXTREMELY COMMON)
-    Stores events in the database for traceability.
+    
+    This function processes route change events from Kafka and stores them in MongoDB
+    for audit trail and compliance purposes. It's called automatically by the Kafka
+    consumer whenever a route change event is received.
+    
+    What this function does:
+    1. Validates the event has all required fields (action, tenant, service, env, version)
+    2. Calls insert_audit_event() to store the event in MongoDB
+    3. Logs success or failure for monitoring
+    
+    MongoDB audit store supports queries like:
+    - Who changed this route? (changed_by field)
+    - When did it change? (occurred_at timestamp)
+    - What was the previous value? (previous_url, previous_state)
+    - Can we see history for last 30/90 days? (indexed by occurred_at)
+    - Can we debug an outage caused by a config change? (full event context)
+    
+    Args:
+        event: Dictionary containing route change event from Kafka
+            Required fields: action, tenant, service, env, version
+            Optional fields: event_id, url, occurred_at, changed_by, etc.
     """
+    # Extract required fields from the event
+    # These fields identify which route was changed
     action = event.get("action")
     tenant = event.get("tenant")
     service = event.get("service")
     env = event.get("env")
     version = event.get("version")
 
+    # Validate that all required fields are present
+    # If any are missing, we can't create a valid audit record
     if not all([action, tenant, service, env, version]):
-        logger.warning(f"Invalid event for audit log: {event}")
+        logger.warning(
+            f"Invalid event for audit log - missing required fields: {event}. "
+            f"Required: action, tenant, service, env, version"
+        )
         return
 
-    sql = """
-    INSERT INTO route_events (tenant, service, env, version, action)
-    VALUES (%(tenant)s, %(service)s, %(env)s, %(version)s, %(action)s);
-    """
-
     try:
-        with get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    sql,
-                    {
-                        "tenant": tenant,
-                        "service": service,
-                        "env": env,
-                        "version": version,
-                        "action": action,
-                    },
-                )
-        logger.info(
-            f"Audit log saved: {tenant}/{service}/{env}/{version} action={action}"
-        )
+        # Insert audit event into MongoDB
+        # The insert_audit_event function:
+        # - Builds a structured document with all event data
+        # - Handles timestamp parsing and conversion
+        # - Inserts into the route_events collection
+        # - Returns True on success, False on failure
+        success = insert_audit_event(event)
+        
+        if success:
+            # Log successful insertion for monitoring and debugging
+            logger.info(
+                f"✓ Audit log saved to MongoDB: {tenant}/{service}/{env}/{version} "
+                f"action={action}, event_id={event.get('event_id')}"
+            )
+        else:
+            # Log failure - this is important for debugging
+            # The insert_audit_event function already logged the specific error
+            logger.error(
+                f"✗ Failed to save audit log to MongoDB: {tenant}/{service}/{env}/{version} "
+                f"action={action}, event_id={event.get('event_id')}. "
+                f"Check MongoDB connection and permissions."
+            )
     except Exception as e:
-        logger.warning(f"Audit log insert failed: {e}")
+        # Catch any unexpected errors during insertion
+        # This should rarely happen since insert_audit_event handles most errors
+        logger.error(
+            f"✗ Audit log insert failed with exception: {e}. "
+            f"Event: {event}",
+            exc_info=True  # Include full stack trace for debugging
+        )
 
 
 def run_consumer(consumer_type: str) -> None:
@@ -175,11 +211,17 @@ def run_consumer(consumer_type: str) -> None:
         get_redis_client()  # Initialize Redis client
         logger.info("✓ Redis client initialized")
     
-    # Cache warming and audit log need database
-    if consumer_type in ["cache_warming", "audit_log"]:
+    # Cache warming needs database
+    if consumer_type == "cache_warming":
         logger.info("Initializing database connection pool...")
         initialize_pool()
         logger.info("✓ Database connection pool initialized")
+    
+    # Audit log needs MongoDB
+    if consumer_type == "audit_log":
+        logger.info("Initializing MongoDB client for audit logging...")
+        get_mongodb_client()  # Initialize MongoDB client
+        logger.info("✓ MongoDB client initialized")
     
     # Set up signal handlers for graceful shutdown
     shutdown_requested = False
@@ -207,15 +249,47 @@ def run_consumer(consumer_type: str) -> None:
         )
 
         # Main loop: read messages and process
+        # This loop continuously polls Kafka for new messages
+        # When messages arrive, they are processed by the appropriate handler
+        message_count = 0
         while not shutdown_requested:
+            # Poll Kafka for new messages
+            # timeout_ms: How long to wait for messages (returns empty if no messages)
             records = consumer.poll(timeout_ms=settings.kafka.consumer_poll_timeout_ms)
-            for _, messages in records.items():
+            
+            # Process all messages received in this poll
+            for topic_partition, messages in records.items():
                 for message in messages:
+                    message_count += 1
                     try:
+                        # Extract event data from Kafka message
+                        # message.value is already deserialized from JSON (see _build_consumer)
                         event = message.value
+                        
+                        # Log that we received an event (helpful for debugging)
+                        if consumer_type == "audit_log":
+                            logger.debug(
+                                f"Received audit event #{message_count}: "
+                                f"action={event.get('action')}, "
+                                f"route={event.get('tenant')}/{event.get('service')}/"
+                                f"{event.get('env')}/{event.get('version')}, "
+                                f"event_id={event.get('event_id')}"
+                            )
+                        
+                        # Call the appropriate handler for this consumer type
+                        # Each handler processes the event differently:
+                        # - cache_invalidation: Deletes Redis cache keys
+                        # - cache_warming: Pre-loads cache from database
+                        # - audit_log: Stores event in MongoDB
                         handlers[consumer_type](event)
                     except Exception as e:
-                        logger.warning(f"Consumer error: {e}")
+                        # Log errors but don't crash the consumer
+                        # This allows the consumer to continue processing other messages
+                        logger.error(
+                            f"Error processing message #{message_count} in {consumer_type} consumer: {e}. "
+                            f"Message: {message.value if hasattr(message, 'value') else 'N/A'}",
+                            exc_info=True  # Include full stack trace for debugging
+                        )
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down...")
     except Exception as e:
@@ -229,9 +303,14 @@ def run_consumer(consumer_type: str) -> None:
             logger.info("✓ Kafka consumer closed")
         
         # Close database pool if it was initialized
-        if consumer_type in ["cache_warming", "audit_log"]:
+        if consumer_type == "cache_warming":
             close_pool()
             logger.info("✓ Database connection pool closed")
+        
+        # Close MongoDB client if it was initialized
+        if consumer_type == "audit_log":
+            close_mongodb_client()
+            logger.info("✓ MongoDB client closed")
         
         # Close Redis client if it was initialized
         if consumer_type == "cache_invalidation":

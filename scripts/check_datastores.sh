@@ -212,34 +212,47 @@ check_kafka() {
     echo ""
 }
 
-# Function to show audit log
-check_audit_log() {
-    echo -e "${BOLD}${GREEN}┌─ Audit Log (Route Events)${NC}"
-    if docker exec postgres psql -U app_user -d app_db -c "SELECT 1;" > /dev/null 2>&1; then
-        AUDIT_COUNT=$(docker exec postgres psql -U app_user -d app_db -t -c "SELECT COUNT(*) FROM route_events;" 2>/dev/null | tr -d ' ' | tr -d '\r')
-        echo -e "${CYAN}│  📊 Total Events: ${BOLD}${AUDIT_COUNT}${NC}"
+# Function to check MongoDB
+check_mongodb() {
+    echo -e "${BOLD}${BLUE}┌─ MongoDB Audit Store${NC}"
+    # Check if MongoDB container is running
+    if ! docker ps --format "{{.Names}}" | grep -q "^mongodb$"; then
+        echo -e "${RED}│  ✗ MongoDB container is not running${NC}"
+        echo -e "${BLUE}└────────────────────────────────────────────────────────────────${NC}"
+        echo ""
+        return
+    fi
+    
+    # Try to ping MongoDB
+    if docker exec mongodb mongosh -u admin -p admin_password --quiet --eval "db.adminCommand('ping')" > /dev/null 2>&1; then
+        echo -e "${GREEN}│  ✓ MongoDB is accessible${NC}"
+        
+        # Get audit event count
+        AUDIT_COUNT=$(docker exec mongodb mongosh -u admin -p admin_password --quiet --eval "db.route_events.countDocuments()" audit_db 2>/dev/null | tr -d '\r' | tr -d '\n')
+        if [ -z "$AUDIT_COUNT" ] || [ "$AUDIT_COUNT" == "null" ]; then
+            AUDIT_COUNT=0
+        fi
+        echo -e "${CYAN}│  📊 Total Audit Events: ${BOLD}${AUDIT_COUNT}${NC}"
         
         if [ "$AUDIT_COUNT" -gt 0 ]; then
             echo -e "${CYAN}│  Recent Events:${NC}"
-            docker exec postgres psql -U app_user -d app_db -t -A -F"|" -c "
-                SELECT 
-                    action,
-                    tenant,
-                    service,
-                    env,
-                    version,
-                    TO_CHAR(created_at, 'HH24:MI:SS') as time
-                FROM route_events
-                ORDER BY created_at DESC
-                LIMIT 5;
+            # Get recent events using mongosh
+            docker exec mongodb mongosh -u admin -p admin_password --quiet audit_db --eval "
+                db.route_events.find()
+                    .sort({occurred_at: -1})
+                    .limit(5)
+                    .forEach(function(doc) {
+                        var action = doc.action || 'unknown';
+                        var route = doc.route || {};
+                        var tenant = route.tenant || 'unknown';
+                        var service = route.service || 'unknown';
+                        var env = route.env || 'unknown';
+                        var version = route.version || 'unknown';
+                        var time = doc.occurred_at ? doc.occurred_at.toISOString().substr(11, 8) : 'unknown';
+                        print(action + '|' + tenant + '|' + service + '|' + env + '|' + version + '|' + time);
+                    });
             " 2>/dev/null | while IFS='|' read -r action tenant service env version time; do
-                action=$(echo "$action" | xargs)
-                tenant=$(echo "$tenant" | xargs)
-                service=$(echo "$service" | xargs)
-                env=$(echo "$env" | xargs)
-                version=$(echo "$version" | xargs)
-                time=$(echo "$time" | xargs)
-                if [ ! -z "$action" ]; then
+                if [ ! -z "$action" ] && [ "$action" != "null" ]; then
                     case "$action" in
                         "created")
                             ICON="➕"
@@ -264,6 +277,34 @@ check_audit_log() {
         else
             echo -e "${YELLOW}│  ⚠ No audit log entries yet${NC}"
         fi
+        
+        # Get collection stats
+        COLLECTION_STATS=$(docker exec mongodb mongosh -u admin -p admin_password --quiet audit_db --eval "db.route_events.stats().size" 2>/dev/null | tr -d '\r' | tr -d '\n')
+        if [ ! -z "$COLLECTION_STATS" ] && [ "$COLLECTION_STATS" != "null" ] && [ "$COLLECTION_STATS" != "undefined" ]; then
+            SIZE_KB=$((COLLECTION_STATS / 1024))
+            echo -e "${CYAN}│  💾 Collection Size: ${BOLD}${SIZE_KB} KB${NC}"
+        fi
+    else
+        echo -e "${RED}│  ✗ MongoDB is not accessible${NC}"
+    fi
+    echo -e "${BLUE}└────────────────────────────────────────────────────────────────${NC}"
+    echo ""
+}
+
+# Function to show audit log (deprecated - now using MongoDB)
+check_audit_log() {
+    echo -e "${BOLD}${GREEN}┌─ Audit Log (PostgreSQL - Deprecated)${NC}"
+    echo -e "${YELLOW}│  ⚠ Note: Audit logs are now stored in MongoDB${NC}"
+    echo -e "${YELLOW}│     See MongoDB section above for current audit data${NC}"
+    if docker exec postgres psql -U app_user -d app_db -c "SELECT 1;" > /dev/null 2>&1; then
+        # Check if route_events table still exists
+        TABLE_EXISTS=$(docker exec postgres psql -U app_user -d app_db -t -c "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'route_events');" 2>/dev/null | tr -d ' ' | tr -d '\r')
+        if [ "$TABLE_EXISTS" == "t" ]; then
+            AUDIT_COUNT=$(docker exec postgres psql -U app_user -d app_db -t -c "SELECT COUNT(*) FROM route_events;" 2>/dev/null | tr -d ' ' | tr -d '\r')
+            echo -e "${CYAN}│  📊 Legacy Events (PostgreSQL): ${BOLD}${AUDIT_COUNT}${NC}"
+        else
+            echo -e "${CYAN}│  📊 Legacy Events: ${BOLD}0${NC} (table removed)${NC}"
+        fi
     else
         echo -e "${RED}│  ✗ Cannot access database${NC}"
     fi
@@ -279,6 +320,7 @@ main() {
             show_header
             check_postgresql
             check_redis
+            check_mongodb
             check_kafka
             check_audit_log
             echo -e "${BOLD}${CYAN}Press Ctrl+C to exit live mode${NC}"
@@ -289,6 +331,7 @@ main() {
         show_header
         check_postgresql
         check_redis
+        check_mongodb
         check_kafka
         check_audit_log
         echo -e "${BOLD}${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"

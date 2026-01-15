@@ -9,6 +9,7 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
 - **Route Resolution (Read Path)**: Fast, cache-optimized endpoint URL resolution
 - **Route Management (Write Path)**: Strongly consistent route creation, activation, and deactivation
 - **Event-Driven Architecture**: Decoupled side effects via Kafka for cache invalidation and downstream systems
+- **Audit Trail**: Comprehensive audit logging with MongoDB for change history and compliance
 
 ### Design Principles
 
@@ -54,6 +55,14 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
                   │ (Cache Inv, │
                   │   Audit,    │
                   │   etc.)     │
+                  └──────┬───────┘
+                         │
+                         │ (audit consumer)
+                         ▼
+                  ┌─────────────┐
+                  │  MongoDB    │
+                  │ (Audit Store│
+                  │   & History)│
                   └─────────────┘
 ```
 
@@ -127,7 +136,54 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
 - Positive entries: 60 seconds
 - Negative entries: 10 seconds (shorter to allow quick recovery)
 
-### 3.5 Event System (`kafka/producer.py`)
+### 3.5 Audit Store (`mongodb_client/client.py`)
+
+**Purpose**: Store route change history for audit, compliance, and debugging
+
+**Storage**: MongoDB for flexible schema and efficient querying
+
+**Document Structure**:
+```json
+{
+  "event_id": "uuid",
+  "event_type": "route_changed",
+  "action": "created|activated|deactivated",
+  "route": {
+    "tenant": "team-a",
+    "service": "payments",
+    "env": "prod",
+    "version": "v2"
+  },
+  "url": "https://...",
+  "previous_url": "https://...",
+  "previous_state": "active|inactive",
+  "changed_by": "user@example.com",
+  "occurred_at": ISODate,
+  "processed_at": ISODate,
+  "metadata": {}
+}
+```
+
+**Indexes**:
+- Compound index on route fields + occurred_at (for route-specific queries)
+- Index on occurred_at (for time-based queries)
+- Index on action + occurred_at (for filtering by action type)
+- Unique index on event_id (for deduplication)
+
+**Query Capabilities**:
+- Who changed this route? (changed_by field)
+- When did it change? (occurred_at timestamp)
+- What was the previous value? (previous_url, previous_state)
+- History for last 30/90 days? (time-based queries)
+- Debug outages? (full event context with action, route, timestamps)
+
+**API Endpoints**:
+- `GET /api/v1/audit/route` - Get history for specific route
+- `GET /api/v1/audit/recent` - Get events from last N days
+- `GET /api/v1/audit/action` - Filter by action type
+- `GET /api/v1/audit/time-range` - Query within time window
+
+### 3.6 Event System (`kafka/producer.py`)
 
 **Purpose**: Decouple write path from side effects
 
@@ -157,7 +213,7 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
 
 **Semantics**: At-least-once delivery with effectively-once behavior via idempotent consumers
 
-### 3.6 Observability
+### 3.7 Observability
 
 **Logging** (`logger/logging.py`):
 - Centralized logging configuration
@@ -252,7 +308,7 @@ Kafka Topic (route-events)
     │   └─► Delete Redis keys for changed routes
     │
     ├─► Audit Consumer
-    │   └─► Write audit logs
+    │   └─► Write audit logs to MongoDB
     │
     └─► Other Consumers
         └─► Custom business logic
@@ -329,8 +385,9 @@ Kafka Topic (route-events)
 ### 8.1 Core Technologies
 
 - **Language**: Python 3.x
-- **Database**: PostgreSQL 16
-- **Cache**: Redis 7
+- **Database**: PostgreSQL 16 (source of truth)
+- **Cache**: Redis 7 (read path optimization)
+- **Audit Store**: MongoDB 7 (change history and audit logs)
 - **Message Queue**: Apache Kafka 7.5.0
 - **Coordination**: Zookeeper (for Kafka)
 
@@ -338,6 +395,7 @@ Kafka Topic (route-events)
 
 - `psycopg2`: PostgreSQL driver
 - `redis`: Redis client
+- `pymongo`: MongoDB client for audit store
 - `kafka-python`: Kafka producer/consumer
 - `prometheus-client`: Metrics collection
 
@@ -400,6 +458,7 @@ Kafka Topic (route-events)
 ### 10.3 Backup & Recovery
 
 - **Database**: PostgreSQL backups (WAL archiving)
+- **MongoDB**: Audit store backups for compliance
 - **Kafka**: Event replay for recovery
 - **Cache**: Rebuilds automatically via cache-aside pattern
 
@@ -407,12 +466,12 @@ Kafka Topic (route-events)
 
 ### 11.1 Potential Improvements
 
-- **API Layer**: REST API for route management
 - **Authentication/Authorization**: RBAC for multi-tenant access
 - **Rate Limiting**: Per-tenant rate limits
 - **Multi-region**: Cross-region replication
 - **GraphQL API**: Flexible query interface
 - **WebSocket**: Real-time route updates
+- **Audit Analytics**: Advanced analytics and reporting on audit data
 
 ### 11.2 Performance Optimizations
 
@@ -427,8 +486,9 @@ Traffic Manager is designed as a control plane for routing configuration with:
 
 - **Fast reads**: Sub-millisecond cache hits, eventually consistent
 - **Reliable writes**: Strong consistency, ACID transactions
+- **Comprehensive audit trail**: MongoDB-based audit store with rich querying capabilities
 - **Scalable architecture**: Horizontal scaling for reads, independent consumer scaling
 - **Fault tolerance**: Component failures don't cascade
 - **Observability**: Comprehensive logging and metrics
 
-The system prioritizes correctness for writes and performance for reads, with clear consistency guarantees and failure isolation.
+The system prioritizes correctness for writes and performance for reads, with clear consistency guarantees, failure isolation, and full auditability for compliance and debugging.

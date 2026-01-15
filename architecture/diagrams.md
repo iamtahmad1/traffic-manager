@@ -18,6 +18,7 @@ graph TB
     subgraph "Data Layer"
         Redis[(Redis Cache)]
         PostgreSQL[(PostgreSQL<br/>Source of Truth)]
+        MongoDB[(MongoDB<br/>Audit Store)]
     end
     
     subgraph "Event Layer"
@@ -32,10 +33,12 @@ graph TB
     
     Client -->|Read Request| ReadPath
     Client -->|Write Request| WritePath
+    Client -->|Audit Query| ReadPath
     
     ReadPath -->|Cache Check| Redis
     ReadPath -->|Cache Miss| PostgreSQL
     ReadPath -->|Cache Result| Redis
+    ReadPath -->|Query Audit| MongoDB
     
     WritePath -->|Transaction| PostgreSQL
     WritePath -->|Publish Event| Kafka
@@ -45,11 +48,13 @@ graph TB
     Kafka -->|Events| Other
     
     CacheInv -->|Invalidate| Redis
+    Audit -->|Write Audit Logs| MongoDB
     
     style ReadPath fill:#e1f5ff
     style WritePath fill:#ffe1f5
     style PostgreSQL fill:#fff4e1
     style Redis fill:#ff4e4e
+    style MongoDB fill:#4e4eff
     style Kafka fill:#4eff4e
 ```
 
@@ -203,6 +208,7 @@ graph LR
     subgraph "Infrastructure"
         DB[(PostgreSQL)]
         RD[(Redis)]
+        MD[(MongoDB)]
         KF[Kafka]
     end
     
@@ -214,6 +220,7 @@ graph LR
     RP --> RC
     RC --> RD
     RP --> DB
+    RP --> MD
     RP --> LG
     RP --> MT
     
@@ -227,6 +234,7 @@ graph LR
     style WP fill:#ffe1f5
     style DB fill:#fff4e1
     style RD fill:#ff4e4e
+    style MD fill:#4e4eff
     style KF fill:#4eff4e
 ```
 
@@ -245,7 +253,7 @@ graph TD
     
     subgraph "Actions"
         RD[(Redis<br/>Key Deletion)]
-        AL[Audit Logs]
+        MD[(MongoDB<br/>Audit Store)]
         BL[Business Logic]
     end
     
@@ -255,7 +263,7 @@ graph TD
     KF -->|Consume| OT
     
     CI -->|Delete| RD
-    AU -->|Write| AL
+    AU -->|Write Audit Logs| MD
     OT -->|Execute| BL
     
     style WP fill:#ffe1f5
@@ -263,6 +271,7 @@ graph TD
     style CI fill:#e1f5ff
     style AU fill:#e1f5ff
     style OT fill:#e1f5ff
+    style MD fill:#4e4eff
 ```
 
 ## 7. Consistency Model Diagram
@@ -345,6 +354,7 @@ graph TB
     subgraph "Shared Resources"
         RD[(Redis<br/>100K+ req/s)]
         DB[(PostgreSQL<br/>1K-10K writes/s)]
+        MD[(MongoDB<br/>Audit Store)]
         KF[Kafka<br/>High Throughput]
     end
     
@@ -370,11 +380,16 @@ graph TB
     KF --> C2
     KF --> C3
     
+    C1 --> MD
+    C2 --> MD
+    C3 --> MD
+    
     style RP1 fill:#e1f5ff
     style RP2 fill:#e1f5ff
     style RP3 fill:#e1f5ff
     style WP1 fill:#ffe1f5
     style WP2 fill:#ffe1f5
+    style MD fill:#4e4eff
 ```
 
 ## 10. Metrics and Observability
@@ -462,7 +477,45 @@ flowchart TD
     style ReturnError fill:#FFB6C1
 ```
 
-## 12. Idempotency Model
+## 12. Audit Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant WritePath
+    participant PostgreSQL
+    participant Kafka
+    participant AuditConsumer
+    participant MongoDB
+    participant AuditAPI
+    
+    Note over Client,AuditAPI: Write Path - Audit Logging
+    Client->>WritePath: create_route() / activate_route() / deactivate_route()
+    WritePath->>PostgreSQL: BEGIN TRANSACTION
+    WritePath->>PostgreSQL: INSERT/UPDATE route
+    WritePath->>PostgreSQL: COMMIT
+    WritePath->>Kafka: Publish route_changed event
+    
+    Note over Kafka,MongoDB: Consumer Processing
+    Kafka->>AuditConsumer: Consume event
+    AuditConsumer->>MongoDB: Insert audit document
+    MongoDB-->>AuditConsumer: ACK
+    
+    Note over Client,AuditAPI: Query Path - Audit Retrieval
+    Client->>AuditAPI: GET /api/v1/audit/route
+    AuditAPI->>MongoDB: Query with indexes
+    MongoDB-->>AuditAPI: Return audit events
+    AuditAPI-->>Client: JSON response with history
+    
+    style WritePath fill:#ffe1f5
+    style PostgreSQL fill:#fff4e1
+    style Kafka fill:#4eff4e
+    style AuditConsumer fill:#e1f5ff
+    style MongoDB fill:#4e4eff
+    style AuditAPI fill:#e1f5ff
+```
+
+## 13. Idempotency Model
 
 ```mermaid
 graph TD
@@ -511,8 +564,9 @@ These Mermaid diagrams can be viewed in:
 
 - **Blue boxes**: Read path components
 - **Pink boxes**: Write path components
-- **Yellow boxes**: Database/storage
-- **Red boxes**: Cache
-- **Green boxes**: Event/messaging systems
+- **Yellow boxes**: Database/storage (PostgreSQL)
+- **Red boxes**: Cache (Redis)
+- **Dark Blue boxes**: Audit store (MongoDB)
+- **Green boxes**: Event/messaging systems (Kafka)
 - **Light colors**: Application components
 - **Dark colors**: Infrastructure components

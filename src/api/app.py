@@ -15,6 +15,12 @@ from service import (
     activate_route,
     deactivate_route,
 )
+from service.audit import (
+    get_route_history,
+    get_recent_events,
+    get_events_by_action,
+    get_events_in_time_range,
+)
 
 # Import database pool for health checks
 from db.pool import get_connection, get_pool_status
@@ -131,11 +137,12 @@ def register_routes(app: Flask):
             "database": check_database(),
             "cache": check_cache(),
             "kafka": check_kafka(),
+            "mongodb": check_mongodb(),
         }
         
         # Service is ready if all critical dependencies are healthy
         # Database is critical (can't work without it)
-        # Cache and Kafka are non-critical (can degrade gracefully)
+        # Cache, Kafka, and MongoDB are non-critical (can degrade gracefully)
         all_ready = checks["database"]["status"] == "healthy"
         
         status_code = 200 if all_ready else 503  # 503 = Service Unavailable
@@ -439,6 +446,293 @@ def register_routes(app: Flask):
                 "error": "Internal server error",
                 "message": "An unexpected error occurred"
             }), 500
+    
+    # ============================================
+    # Audit Log Endpoints
+    # ============================================
+    # These endpoints provide access to route change history from MongoDB
+    
+    @app.route('/api/v1/audit/route', methods=['GET'])
+    def get_route_audit_history():
+        """
+        Get audit history for a specific route.
+        
+        Answers: "Who changed this route?" and "When did it change?"
+        
+        Query Parameters:
+            tenant: Tenant name (required)
+            service: Service name (required)
+            env: Environment name (required)
+            version: Version name (required)
+            limit: Maximum number of events to return (default: 100, max: 1000)
+        
+        Returns:
+            JSON response with list of audit events
+        
+        Example:
+            GET /api/v1/audit/route?tenant=team-a&service=payments&env=prod&version=v2&limit=50
+        """
+        # Get query parameters
+        tenant = request.args.get('tenant')
+        service = request.args.get('service')
+        env = request.args.get('env')
+        version = request.args.get('version')
+        limit = request.args.get('limit', default=100, type=int)
+        
+        # Validate required parameters
+        if not all([tenant, service, env, version]):
+            return jsonify({
+                "error": "Missing required parameters",
+                "required": ["tenant", "service", "env", "version"]
+            }), 400
+        
+        # Validate limit
+        if limit < 1 or limit > 1000:
+            return jsonify({
+                "error": "Invalid limit",
+                "message": "Limit must be between 1 and 1000"
+            }), 400
+        
+        try:
+            events = get_route_history(tenant, service, env, version, limit)
+            
+            return jsonify({
+                "route": {
+                    "tenant": tenant,
+                    "service": service,
+                    "env": env,
+                    "version": version
+                },
+                "count": len(events),
+                "events": events
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving route audit history: {e}", exc_info=True)
+            return jsonify({
+                "error": "Internal server error",
+                "message": "An unexpected error occurred"
+            }), 500
+    
+    @app.route('/api/v1/audit/recent', methods=['GET'])
+    def get_recent_audit_events():
+        """
+        Get audit events from the last N days.
+        
+        Answers: "Can we see history for last 30/90 days?"
+        
+        Query Parameters:
+            days: Number of days to look back (default: 30, max: 365)
+            tenant: Optional tenant filter
+            service: Optional service filter
+            env: Optional environment filter
+            limit: Maximum number of events to return (default: 100, max: 1000)
+        
+        Returns:
+            JSON response with list of audit events
+        
+        Example:
+            GET /api/v1/audit/recent?days=90&limit=200
+            GET /api/v1/audit/recent?days=30&tenant=team-a&service=payments
+        """
+        # Get query parameters
+        days = request.args.get('days', default=30, type=int)
+        tenant = request.args.get('tenant')
+        service = request.args.get('service')
+        env = request.args.get('env')
+        limit = request.args.get('limit', default=100, type=int)
+        
+        # Validate parameters
+        if days < 1 or days > 365:
+            return jsonify({
+                "error": "Invalid days",
+                "message": "Days must be between 1 and 365"
+            }), 400
+        
+        if limit < 1 or limit > 1000:
+            return jsonify({
+                "error": "Invalid limit",
+                "message": "Limit must be between 1 and 1000"
+            }), 400
+        
+        try:
+            events = get_recent_events(days, tenant, service, env, limit)
+            
+            return jsonify({
+                "days": days,
+                "count": len(events),
+                "events": events
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving recent audit events: {e}", exc_info=True)
+            return jsonify({
+                "error": "Internal server error",
+                "message": "An unexpected error occurred"
+            }), 500
+    
+    @app.route('/api/v1/audit/action', methods=['GET'])
+    def get_audit_events_by_action():
+        """
+        Get audit events filtered by action type.
+        
+        Answers: "Can we debug an outage caused by a config change?"
+        Useful for finding deactivations or other critical actions.
+        
+        Query Parameters:
+            action: Action type - created, activated, or deactivated (required)
+            hours: Optional number of hours to look back
+            tenant: Optional tenant filter
+            service: Optional service filter
+            env: Optional environment filter
+            limit: Maximum number of events to return (default: 100, max: 1000)
+        
+        Returns:
+            JSON response with list of audit events
+        
+        Example:
+            GET /api/v1/audit/action?action=deactivated&hours=1
+            GET /api/v1/audit/action?action=created&tenant=team-a&service=payments
+        """
+        # Get query parameters
+        action = request.args.get('action')
+        hours = request.args.get('hours', type=int)
+        tenant = request.args.get('tenant')
+        service = request.args.get('service')
+        env = request.args.get('env')
+        limit = request.args.get('limit', default=100, type=int)
+        
+        # Validate required parameters
+        if not action:
+            return jsonify({
+                "error": "Missing required parameter",
+                "required": ["action"],
+                "valid_actions": ["created", "activated", "deactivated"]
+            }), 400
+        
+        if action not in ["created", "activated", "deactivated"]:
+            return jsonify({
+                "error": "Invalid action",
+                "valid_actions": ["created", "activated", "deactivated"]
+            }), 400
+        
+        if limit < 1 or limit > 1000:
+            return jsonify({
+                "error": "Invalid limit",
+                "message": "Limit must be between 1 and 1000"
+            }), 400
+        
+        try:
+            events = get_events_by_action(action, hours, tenant, service, env, limit)
+            
+            return jsonify({
+                "action": action,
+                "hours": hours,
+                "count": len(events),
+                "events": events
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving audit events by action: {e}", exc_info=True)
+            return jsonify({
+                "error": "Internal server error",
+                "message": "An unexpected error occurred"
+            }), 500
+    
+    @app.route('/api/v1/audit/time-range', methods=['GET'])
+    def get_audit_events_in_time_range():
+        """
+        Get audit events within a specific time range.
+        
+        Useful for debugging outages by looking at changes in a specific time window.
+        
+        Query Parameters:
+            start_time: Start of time range in ISO 8601 format (required)
+            end_time: End of time range in ISO 8601 format (required)
+            tenant: Optional tenant filter
+            service: Optional service filter
+            env: Optional environment filter
+            action: Optional action filter (created, activated, deactivated)
+            limit: Maximum number of events to return (default: 100, max: 1000)
+        
+        Returns:
+            JSON response with list of audit events
+        
+        Example:
+            GET /api/v1/audit/time-range?start_time=2024-01-14T17:00:00Z&end_time=2024-01-14T18:00:00Z
+        """
+        # Get query parameters
+        start_time_str = request.args.get('start_time')
+        end_time_str = request.args.get('end_time')
+        tenant = request.args.get('tenant')
+        service = request.args.get('service')
+        env = request.args.get('env')
+        action = request.args.get('action')
+        limit = request.args.get('limit', default=100, type=int)
+        
+        # Validate required parameters
+        if not start_time_str or not end_time_str:
+            return jsonify({
+                "error": "Missing required parameters",
+                "required": ["start_time", "end_time"],
+                "format": "ISO 8601 (e.g., 2024-01-14T17:00:00Z)"
+            }), 400
+        
+        # Parse timestamps
+        try:
+            start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+            end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+            
+            # Convert to UTC (remove timezone for MongoDB)
+            if start_time.tzinfo:
+                start_time = start_time.astimezone().replace(tzinfo=None)
+            if end_time.tzinfo:
+                end_time = end_time.astimezone().replace(tzinfo=None)
+            
+        except ValueError as e:
+            return jsonify({
+                "error": "Invalid timestamp format",
+                "message": str(e),
+                "format": "ISO 8601 (e.g., 2024-01-14T17:00:00Z)"
+            }), 400
+        
+        # Validate time range
+        if start_time >= end_time:
+            return jsonify({
+                "error": "Invalid time range",
+                "message": "start_time must be before end_time"
+            }), 400
+        
+        if limit < 1 or limit > 1000:
+            return jsonify({
+                "error": "Invalid limit",
+                "message": "Limit must be between 1 and 1000"
+            }), 400
+        
+        if action and action not in ["created", "activated", "deactivated"]:
+            return jsonify({
+                "error": "Invalid action",
+                "valid_actions": ["created", "activated", "deactivated"]
+            }), 400
+        
+        try:
+            events = get_events_in_time_range(
+                start_time, end_time, tenant, service, env, action, limit
+            )
+            
+            return jsonify({
+                "start_time": start_time_str,
+                "end_time": end_time_str,
+                "count": len(events),
+                "events": events
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving audit events in time range: {e}", exc_info=True)
+            return jsonify({
+                "error": "Internal server error",
+                "message": "An unexpected error occurred"
+            }), 500
 
 
 def register_error_handlers(app: Flask):
@@ -592,4 +886,31 @@ def check_kafka():
         return {
             "status": "degraded",  # Degraded, not unhealthy (service can work without Kafka)
             "message": f"Kafka is not accessible: {str(e)}"
+        }
+
+
+def check_mongodb():
+    """
+    Check if MongoDB is accessible.
+    
+    This tries to connect to MongoDB and ping the server.
+    MongoDB is non-critical - audit logging can be delayed if it's down.
+    
+    Returns:
+        Dictionary with check status
+    """
+    try:
+        from mongodb_client import get_mongodb_client
+        client = get_mongodb_client()
+        # Ping the server to test connectivity
+        client.admin.command('ping')
+        return {
+            "status": "healthy",
+            "message": "MongoDB is accessible"
+        }
+    except Exception as e:
+        logger.warning(f"MongoDB health check failed: {e}")
+        return {
+            "status": "degraded",  # Degraded, not unhealthy (service can work without MongoDB)
+            "message": f"MongoDB is not accessible: {str(e)}"
         }

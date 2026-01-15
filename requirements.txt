@@ -19,3 +19,6 @@ flask>=3.0.0
 
 # HTTP Client - For load testing scripts
 requests>=2.31.0
+
+# MongoDB - For audit store
+pymongo>=4.6.0

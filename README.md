@@ -4,21 +4,23 @@ Traffic Manager is a production-ready service for managing, routing, and control
 
 ## Features
 
-- 🚀 **REST API** - Full REST API for route management
+- 🚀 **REST API** - Full REST API for route management and audit queries
 - ⚡ **High Performance** - Sub-millisecond cache hits with Redis
 - 🔒 **Reliable** - Database transactions with connection pooling
 - 📊 **Observable** - Prometheus metrics and health checks
+- 📝 **Audit Trail** - MongoDB-based audit store with rich querying capabilities
 - 🏗️ **Production-Ready** - Centralized config, pooling, monitoring
-- 📝 **Well-Documented** - Extensive comments and documentation
+- 📚 **Well-Documented** - Extensive comments and documentation
 
 ## Architecture
 
 Traffic Manager follows a layered architecture:
 
-- **API Layer**: REST endpoints for route management
-- **Service Layer**: Business logic for read/write paths
+- **API Layer**: REST endpoints for route management and audit queries
+- **Service Layer**: Business logic for read/write paths and audit queries
 - **Cache Layer**: Redis for fast reads (cache-aside pattern)
 - **Database Layer**: PostgreSQL as source of truth
+- **Audit Store**: MongoDB for route change history and audit logs
 - **Event Layer**: Kafka for event streaming
 - **Monitoring**: Prometheus metrics and health checks
 
@@ -27,6 +29,7 @@ Traffic Manager follows a layered architecture:
 - Python 3.8+
 - PostgreSQL 12+
 - Redis 6+
+- MongoDB 7+ (for audit store)
 - Kafka 2.8+ (optional, for event streaming)
 
 ## Installation
@@ -66,7 +69,15 @@ cd datastore
 docker-compose up -d redis
 ```
 
-### 5. Set Up Kafka (Optional)
+### 5. Set Up MongoDB
+
+```bash
+# Start MongoDB (using Docker Compose)
+cd datastore
+docker-compose up -d mongodb
+```
+
+### 6. Set Up Kafka (Optional)
 
 ```bash
 # Start Kafka (using Docker Compose)
@@ -97,6 +108,17 @@ export REDIS_HOST=localhost
 export REDIS_PORT=6379
 export REDIS_DB=0
 export REDIS_MAX_CONNECTIONS=50
+```
+
+### MongoDB Configuration
+
+```bash
+export MONGODB_HOST=localhost
+export MONGODB_PORT=27017
+export MONGODB_DB=audit_db
+export MONGODB_USER=admin
+export MONGODB_PASSWORD=admin_password
+export MONGODB_AUDIT_COLLECTION=route_events
 ```
 
 ### Kafka Configuration
@@ -233,6 +255,69 @@ curl -X POST http://localhost:8000/api/v1/routes/deactivate \
   }'
 ```
 
+### Audit Path
+
+#### Get Route History
+
+Get audit history for a specific route.
+
+```bash
+curl "http://localhost:8000/api/v1/audit/route?tenant=team-a&service=payments&env=prod&version=v2&limit=50"
+```
+
+**Response:**
+```json
+{
+  "route": {
+    "tenant": "team-a",
+    "service": "payments",
+    "env": "prod",
+    "version": "v2"
+  },
+  "count": 3,
+  "events": [
+    {
+      "event_id": "uuid-1",
+      "action": "activated",
+      "url": "https://payments.example.com/v2",
+      "changed_by": "user@example.com",
+      "occurred_at": "2024-01-14T17:30:00",
+      "processed_at": "2024-01-14T17:30:01"
+    }
+  ]
+}
+```
+
+#### Get Recent Events
+
+Get audit events from the last N days.
+
+```bash
+# Last 30 days
+curl "http://localhost:8000/api/v1/audit/recent?days=30"
+
+# Last 90 days for specific tenant
+curl "http://localhost:8000/api/v1/audit/recent?days=90&tenant=team-a"
+```
+
+#### Get Events by Action
+
+Find all deactivations in the last hour (useful for debugging outages).
+
+```bash
+curl "http://localhost:8000/api/v1/audit/action?action=deactivated&hours=1"
+```
+
+#### Get Events in Time Range
+
+Get audit events within a specific time window.
+
+```bash
+curl "http://localhost:8000/api/v1/audit/time-range?start_time=2024-01-14T17:00:00Z&end_time=2024-01-14T18:00:00Z"
+```
+
+For detailed audit API documentation, see [docs/12-audit-api-endpoints.md](docs/12-audit-api-endpoints.md).
+
 ## Health Checks
 
 ### Basic Health Check
@@ -280,6 +365,10 @@ curl http://localhost:8000/health/ready
     "kafka": {
       "status": "healthy",
       "message": "Kafka is accessible"
+    },
+    "mongodb": {
+      "status": "healthy",
+      "message": "MongoDB is accessible"
     }
   }
 }
@@ -367,7 +456,7 @@ Three common consumer use cases are implemented in `src/kafka_client/consumer.py
 2. **Cache Warming Consumer (VERY COMMON)**
    - Pre-loads cache after a change so reads stay fast
 3. **Audit / Change Log Consumer (EXTREMELY COMMON)**
-   - Writes route change events to the `route_events` table
+   - Writes route change events to MongoDB audit store
 
 ### Run a Consumer
 
@@ -431,11 +520,11 @@ python scripts/run_consumer.py audit_log
 curl -X POST http://localhost:8000/api/v1/routes \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant": "team-a",
+    "tenant": "team-x",
     "service": "payments",
     "env": "prod",
-    "version": "v1",
-    "url": "https://payments.example.com/v1"
+    "version": "v10",
+    "url": "https://team-x.payments.example.com/v2"
   }'
 ```
 
@@ -449,11 +538,15 @@ redis-cli GET route:team-a:payments:prod:v1
 redis-cli TTL route:team-a:payments:prod:v1
 ```
 
-### 7. Verify audit log in PostgreSQL
+### 7. Verify audit log in MongoDB
 
 ```bash
-psql -U app_user -d app_db -h localhost \
-  -c "SELECT tenant, service, env, version, action, created_at FROM route_events ORDER BY created_at DESC LIMIT 5;"
+# Using mongosh
+docker exec -it mongodb mongosh -u admin -p admin_password \
+  -c "use audit_db; db.route_events.find().sort({occurred_at: -1}).limit(5).pretty()"
+
+# Or query via API
+curl "http://localhost:8000/api/v1/audit/recent?days=1&limit=5"
 ```
 
 ### 8. Check consumer logs
@@ -520,9 +613,10 @@ traffic-manager/
 │   ├── cache/             # Redis cache client
 │   ├── config/            # Configuration management
 │   ├── db/                # Database layer (connection pooling)
-│   ├── kafka_client/      # Kafka event producer
+│   ├── kafka_client/      # Kafka event producer and consumers
 │   ├── logger/            # Logging configuration
 │   ├── metrics/           # Prometheus metrics definitions
+│   ├── mongodb_client/    # MongoDB audit store client
 │   ├── monitoring/        # Monitoring and observability
 │   ├── service/           # Business logic
 │   └── main.py            # Application entry point
@@ -547,6 +641,8 @@ For detailed structure information, see [src/STRUCTURE.md](src/STRUCTURE.md).
 - **[Production Readiness](docs/08-production-readiness.md)** - Production patterns assessment
 - **[Implemented Patterns](docs/09-production-patterns-implemented.md)** - What's been implemented
 - **[Monitoring Guide](docs/10-monitoring-guide.md)** - Monitoring setup and usage
+- **[MongoDB Audit Queries](docs/11-mongodb-audit-queries.md)** - Querying audit logs from MongoDB
+- **[Audit API Endpoints](docs/12-audit-api-endpoints.md)** - REST API for audit queries
 
 ## Development
 
@@ -578,6 +674,8 @@ Set all required environment variables for your production environment:
 export DB_HOST=your-db-host
 export DB_PASSWORD=secure-password
 export REDIS_HOST=your-redis-host
+export MONGODB_HOST=your-mongodb-host
+export MONGODB_PASSWORD=secure-password
 export KAFKA_BOOTSTRAP_SERVERS=your-kafka-servers
 export APP_ENVIRONMENT=production
 export APP_DEBUG=false
@@ -628,6 +726,16 @@ docker ps | grep redis
 
 # Test connection
 redis-cli ping
+```
+
+### MongoDB Connection Issues
+
+```bash
+# Check MongoDB is running
+docker ps | grep mongodb
+
+# Test connection
+docker exec mongodb mongosh -u admin -p admin_password --eval "db.adminCommand('ping')"
 ```
 
 ### Kafka Connection Issues

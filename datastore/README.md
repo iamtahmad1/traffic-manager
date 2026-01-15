@@ -6,6 +6,7 @@ This directory contains Docker Compose configuration for all data stores used by
 
 - **PostgreSQL 16**: Primary database (source of truth)
 - **Redis 7**: Cache layer
+- **MongoDB 7**: Audit store for route change history
 - **Zookeeper**: Coordination service for Kafka
 - **Kafka 7.5.0**: Event streaming platform
 
@@ -96,6 +97,14 @@ Set these in `.env` file:
 - `POSTGRES_DB`
 - `POSTGRES_PORT` (default: 5432)
 
+### MongoDB
+
+Set these in `.env` file:
+- `MONGODB_USER` (default: admin)
+- `MONGODB_PASSWORD` (default: admin_password)
+- `MONGODB_DB` (default: audit_db)
+- `MONGODB_PORT` (default: 27017)
+
 ### Kafka
 
 - `KAFKA_BOOTSTRAP_SERVERS`: `localhost:9092` (default)
@@ -104,6 +113,7 @@ Set these in `.env` file:
 
 - **PostgreSQL**: 5432
 - **Redis**: 6379
+- **MongoDB**: 27017
 - **Zookeeper**: 2181
 - **Kafka**: 9092
 
@@ -112,6 +122,7 @@ Set these in `.env` file:
 All data is persisted in Docker volumes:
 - `postgres_data`: PostgreSQL data
 - `redis_data`: Redis data
+- `mongodb_data`: MongoDB data
 - `zookeeper_data`: Zookeeper data
 - `zookeeper_logs`: Zookeeper logs
 - `kafka_data`: Kafka logs and data
@@ -124,6 +135,9 @@ docker exec postgres pg_isready
 
 # Check Redis
 docker exec redis redis-cli ping
+
+# Check MongoDB
+docker exec mongodb mongosh --eval "db.adminCommand('ping')"
 
 # Check Kafka
 docker exec kafka kafka-broker-api-versions --bootstrap-server localhost:9092
