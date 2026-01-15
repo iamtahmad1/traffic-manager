@@ -18,6 +18,7 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
 3. **Eventual Consistency for Reads**: Cache provides fast reads with bounded staleness
 4. **Failure Isolation**: Component failures don't cascade to critical paths
 5. **Idempotency**: All operations are safe to retry
+6. **Resilience Patterns**: Circuit breakers, retry budgets, bulkheads, and graceful draining
 
 ## 2. System Architecture
 
@@ -213,7 +214,41 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
 
 **Semantics**: At-least-once delivery with effectively-once behavior via idempotent consumers
 
-### 3.7 Observability
+### 3.7 Resilience Patterns (`resilience/`)
+
+**Purpose**: Handle failures gracefully and maintain availability under stress
+
+**Implemented Patterns**:
+
+1. **Circuit Breaker** (`circuit_breaker.py`):
+   - Detects service failures and fails fast
+   - States: CLOSED (normal), OPEN (tripped), HALF_OPEN (testing)
+   - Protects database, Redis, and MongoDB calls
+   - Auto-recovers when services come back
+
+2. **Retry Budget** (`retry_budget.py`):
+   - Limits total retries in a time window
+   - Prevents retry storms that amplify failures
+   - Tracks retries and fails fast when budget exhausted
+
+3. **Bulkhead** (`bulkhead.py`):
+   - Isolates resources for different operation types
+   - Separate pools for reads, writes, and audit operations
+   - Prevents one operation type from blocking others
+
+4. **Graceful Draining** (`graceful_drain.py`):
+   - Enables zero-downtime deployments
+   - Stops accepting new requests during shutdown
+   - Waits for in-flight requests to complete
+
+**Integration**:
+- Read path: Circuit breaker + bulkhead + graceful draining
+- Write path: Circuit breaker + bulkhead + graceful draining
+- All patterns accessible via `get_resilience_manager()`
+
+**Metrics**: Available at `/health/resilience` endpoint
+
+### 3.8 Observability
 
 **Logging** (`logger/logging.py`):
 - Centralized logging configuration
@@ -398,6 +433,7 @@ Kafka Topic (route-events)
 - `pymongo`: MongoDB client for audit store
 - `kafka-python`: Kafka producer/consumer
 - `prometheus-client`: Metrics collection
+- **Resilience patterns**: Custom implementation (no external dependencies)
 
 ### 8.3 Infrastructure
 
@@ -491,4 +527,4 @@ Traffic Manager is designed as a control plane for routing configuration with:
 - **Fault tolerance**: Component failures don't cascade
 - **Observability**: Comprehensive logging and metrics
 
-The system prioritizes correctness for writes and performance for reads, with clear consistency guarantees, failure isolation, and full auditability for compliance and debugging.
+The system prioritizes correctness for writes and performance for reads, with clear consistency guarantees, failure isolation, full auditability for compliance and debugging, and comprehensive resilience patterns (circuit breakers, retry budgets, bulkheads, and graceful draining) for production-grade reliability.

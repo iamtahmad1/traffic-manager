@@ -408,16 +408,31 @@ Service B → [Isolated] → Resource Pool B
 ## Key Takeaways
 
 1. **Failures are inevitable**: Design for them
-2. **Circuit breaker**: Stop calling failing services
+2. **Circuit breaker**: Stop calling failing services (✅ IMPLEMENTED)
 3. **Retry with backoff**: Handle transient failures
-4. **Timeouts**: Don't wait forever
-5. **Graceful degradation**: Work with reduced functionality
-6. **Failure isolation**: Prevent cascading failures
-7. **Fail fast**: Detect failures quickly
-8. **Idempotency**: Safe to retry
+4. **Retry budget**: Prevent retry storms (✅ IMPLEMENTED)
+5. **Timeouts**: Don't wait forever
+6. **Graceful degradation**: Work with reduced functionality
+7. **Bulkhead**: Isolate resources (✅ IMPLEMENTED)
+8. **Failure isolation**: Prevent cascading failures
+9. **Graceful draining**: Zero-downtime deployments (✅ IMPLEMENTED)
+10. **Fail fast**: Detect failures quickly
+11. **Idempotency**: Safe to retry
 
 Understanding failure handling helps you:
 - Design resilient systems
 - Prevent cascading failures
 - Maintain availability
 - Handle errors gracefully
+- Pass senior engineer interviews
+
+## Implementation Status
+
+All four resilience patterns are **fully implemented** in Traffic Manager:
+
+- ✅ **Circuit Breaker**: `src/resilience/circuit_breaker.py`
+- ✅ **Retry Budget**: `src/resilience/retry_budget.py`
+- ✅ **Bulkhead**: `src/resilience/bulkhead.py`
+- ✅ **Graceful Draining**: `src/resilience/graceful_drain.py`
+
+See `docs/13-resilience-patterns.md` for complete documentation and interview preparation guide.

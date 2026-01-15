@@ -21,6 +21,9 @@ from db.pool import initialize_pool, close_pool
 from cache import close_redis_client
 from kafka_client import close_kafka_producer
 
+# Import resilience patterns for graceful shutdown
+from resilience import get_resilience_manager
+
 # Import Flask application factory
 # Factory pattern lets us create the app with proper configuration
 from api import create_app
@@ -105,9 +108,10 @@ def main():
     
     This function:
     1. Initializes all services (database, cache, kafka)
-    2. Creates the Flask API application
-    3. Starts the web server
-    4. Handles graceful shutdown on exit
+    2. Initializes resilience patterns (circuit breakers, bulkheads, etc.)
+    3. Creates the Flask API application
+    4. Starts the web server
+    5. Handles graceful shutdown with draining
     
     In production, this would typically be run by a process manager
     like systemd, supervisord, or a container orchestrator (Kubernetes).
@@ -118,6 +122,10 @@ def main():
     logger.info(f"Debug mode: {settings.app.debug}")
     logger.info("=" * 60)
     
+    # Initialize resilience patterns early
+    # These are used throughout the application
+    resilience_manager = get_resilience_manager()
+    
     try:
         # Step 1: Initialize all infrastructure services
         # This must happen before the API starts accepting requests
@@ -126,6 +134,7 @@ def main():
         
         # Step 2: Create Flask application
         # The factory function creates the app with all routes and error handlers
+        # The app will use the resilience manager for graceful draining
         app = create_app()
         
         # Step 3: Start the web server
@@ -134,11 +143,14 @@ def main():
         logger.info(f"Starting API server on {settings.app.api_host}:{settings.app.api_port}")
         logger.info(f"API endpoints available at: http://{settings.app.api_host}:{settings.app.api_port}")
         logger.info("Health check: http://{}:{}/health".format(settings.app.api_host, settings.app.api_port))
+        logger.info("Graceful draining enabled - server will finish in-flight requests before shutdown")
         
         # Run the Flask development server
         # In production, you would use:
         #   gunicorn -w 4 -b 0.0.0.0:8000 'src.main:app'
         # This runs the app using gunicorn (production WSGI server)
+        # Note: Flask's dev server doesn't support graceful shutdown well
+        # For production, use gunicorn with --graceful-timeout
         app.run(
             host=settings.app.api_host,  # Listen on this interface
             port=settings.app.api_port,   # Listen on this port
@@ -147,8 +159,20 @@ def main():
         )
         
     except KeyboardInterrupt:
-        # User pressed Ctrl+C - graceful shutdown
+        # User pressed Ctrl+C - start graceful draining
         logger.info("Received shutdown signal (Ctrl+C)")
+        logger.info("Starting graceful draining...")
+        
+        # Start graceful draining
+        # This stops accepting new requests but finishes in-flight ones
+        resilience_manager.drainer.start_draining()
+        
+        # Wait for all in-flight requests to complete
+        # This ensures we don't kill requests mid-processing
+        if resilience_manager.drainer.wait_for_drain():
+            logger.info("✓ All requests completed, safe to shutdown")
+        else:
+            logger.warning("⚠ Timeout waiting for requests, forcing shutdown")
         
     except Exception as e:
         # Unexpected error during startup or runtime

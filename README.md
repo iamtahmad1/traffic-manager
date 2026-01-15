@@ -9,14 +9,16 @@ Traffic Manager is a production-ready service for managing, routing, and control
 - 🔒 **Reliable** - Database transactions with connection pooling
 - 📊 **Observable** - Prometheus metrics and health checks
 - 📝 **Audit Trail** - MongoDB-based audit store with rich querying capabilities
-- 🏗️ **Production-Ready** - Centralized config, pooling, monitoring
-- 📚 **Well-Documented** - Extensive comments and documentation
+- 🛡️ **Resilient** - Circuit breakers, retry budgets, bulkheads, graceful draining
+- 🏗️ **Production-Ready** - Centralized config, pooling, monitoring, resilience patterns
+- 📚 **Well-Documented** - Extensive comments and documentation for learning
 
 ## Architecture
 
 Traffic Manager follows a layered architecture:
 
 - **API Layer**: REST endpoints for route management and audit queries
+- **Resilience Layer**: Circuit breakers, retry budgets, bulkheads, graceful draining
 - **Service Layer**: Business logic for read/write paths and audit queries
 - **Cache Layer**: Redis for fast reads (cache-aside pattern)
 - **Database Layer**: PostgreSQL as source of truth
@@ -336,7 +338,7 @@ curl http://localhost:8000/health
 
 ### Readiness Probe
 
-Checks if the service is ready to accept traffic (verifies database, cache, kafka).
+Checks if the service is ready to accept traffic (verifies database, cache, kafka, mongodb, and draining status).
 
 ```bash
 curl http://localhost:8000/health/ready
@@ -369,7 +371,51 @@ curl http://localhost:8000/health/ready
     "mongodb": {
       "status": "healthy",
       "message": "MongoDB is accessible"
+    },
+    "draining": {
+      "status": "not_draining",
+      "in_flight_requests": 0,
+      "message": "Server is ready"
     }
+  }
+}
+```
+
+### Resilience Metrics
+
+View metrics from all resilience patterns (circuit breakers, retry budgets, bulkheads, graceful draining).
+
+```bash
+curl http://localhost:8000/health/resilience
+```
+
+**Response:**
+```json
+{
+  "circuit_breakers": {
+    "database": {
+      "state": "closed",
+      "failure_rate": 0.0,
+      "total_calls": 150
+    }
+  },
+  "retry_budgets": {
+    "database": {
+      "current_retries": 5,
+      "max_retries": 100,
+      "budget_used": 5.0
+    }
+  },
+  "bulkheads": {
+    "read_operations": {
+      "current_usage": 3,
+      "max_concurrent": 20,
+      "utilization": 15.0
+    }
+  },
+  "graceful_draining": {
+    "is_draining": false,
+    "in_flight_requests": 0
   }
 }
 ```
@@ -643,6 +689,7 @@ For detailed structure information, see [src/STRUCTURE.md](src/STRUCTURE.md).
 - **[Monitoring Guide](docs/10-monitoring-guide.md)** - Monitoring setup and usage
 - **[MongoDB Audit Queries](docs/11-mongodb-audit-queries.md)** - Querying audit logs from MongoDB
 - **[Audit API Endpoints](docs/12-audit-api-endpoints.md)** - REST API for audit queries
+- **[Resilience Patterns](docs/13-resilience-patterns.md)** - Circuit breakers, retry budgets, bulkheads, graceful draining
 
 ## Development
 

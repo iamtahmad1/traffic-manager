@@ -10,6 +10,13 @@ graph TB
         Client[Client Application]
     end
     
+    subgraph "Resilience Layer"
+        CB[Circuit Breakers]
+        RB[Retry Budgets]
+        BH[Bulkheads]
+        GD[Graceful Draining]
+    end
+    
     subgraph "Application Layer"
         ReadPath[Read Path<br/>routing.py]
         WritePath[Write Path<br/>write_path.py]
@@ -31,15 +38,21 @@ graph TB
         Other[Other Consumers]
     end
     
-    Client -->|Read Request| ReadPath
-    Client -->|Write Request| WritePath
-    Client -->|Audit Query| ReadPath
+    Client -->|Read Request| GD
+    Client -->|Write Request| GD
+    Client -->|Audit Query| GD
     
+    GD -->|If Not Draining| BH
+    BH -->|Read Bulkhead| ReadPath
+    BH -->|Write Bulkhead| WritePath
+    
+    ReadPath -->|Protected by| CB
+    ReadPath -->|Protected by| RB
     ReadPath -->|Cache Check| Redis
     ReadPath -->|Cache Miss| PostgreSQL
-    ReadPath -->|Cache Result| Redis
     ReadPath -->|Query Audit| MongoDB
     
+    WritePath -->|Protected by| CB
     WritePath -->|Transaction| PostgreSQL
     WritePath -->|Publish Event| Kafka
     
@@ -56,6 +69,10 @@ graph TB
     style Redis fill:#ff4e4e
     style MongoDB fill:#4e4eff
     style Kafka fill:#4eff4e
+    style CB fill:#ffd700
+    style RB fill:#ffd700
+    style BH fill:#ffd700
+    style GD fill:#ffd700
 ```
 
 ## 2. Read Path Flow
@@ -515,7 +532,113 @@ sequenceDiagram
     style AuditAPI fill:#e1f5ff
 ```
 
-## 13. Idempotency Model
+## 13. Resilience Patterns Architecture
+
+```mermaid
+graph TB
+    subgraph "Request Flow with Resilience"
+        Request[HTTP Request]
+        GD[Graceful Draining<br/>Check if Draining]
+        BH[Bulkhead<br/>Acquire Slot]
+        CB[Circuit Breaker<br/>Check State]
+        RB[Retry Budget<br/>Check Budget]
+        Service[Service Call]
+    end
+    
+    subgraph "Resilience Patterns"
+        CB1[Circuit Breaker<br/>Database]
+        CB2[Circuit Breaker<br/>Redis]
+        CB3[Circuit Breaker<br/>MongoDB]
+        
+        RB1[Retry Budget<br/>Database]
+        RB2[Retry Budget<br/>Redis]
+        
+        BH1[Bulkhead<br/>Read Operations]
+        BH2[Bulkhead<br/>Write Operations]
+        BH3[Bulkhead<br/>Audit Operations]
+        
+        GD1[Graceful Draining<br/>API Server]
+    end
+    
+    Request --> GD1
+    GD1 -->|If Not Draining| BH1
+    GD1 -->|If Not Draining| BH2
+    BH1 --> CB1
+    BH2 --> CB1
+    CB1 --> RB1
+    RB1 --> Service
+    
+    style GD1 fill:#ffd700
+    style BH1 fill:#ffd700
+    style BH2 fill:#ffd700
+    style CB1 fill:#ffd700
+    style RB1 fill:#ffd700
+    style Service fill:#e1f5ff
+```
+
+## 14. Circuit Breaker State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED: Initial State
+    
+    CLOSED --> OPEN: Failures >= Threshold
+    CLOSED --> CLOSED: Success
+    
+    OPEN --> HALF_OPEN: Timeout Expired
+    OPEN --> OPEN: Still Failing
+    
+    HALF_OPEN --> CLOSED: Test Success
+    HALF_OPEN --> OPEN: Test Failure
+    
+    CLOSED --> [*]: Shutdown
+    OPEN --> [*]: Shutdown
+    HALF_OPEN --> [*]: Shutdown
+```
+
+## 15. Resilience Patterns Interaction
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant GracefulDrain
+    participant Bulkhead
+    participant CircuitBreaker
+    participant RetryBudget
+    participant Service
+    
+    Client->>GracefulDrain: HTTP Request
+    alt Server is Draining
+        GracefulDrain-->>Client: 503 Service Unavailable
+    else Server is Ready
+        GracefulDrain->>Bulkhead: Acquire Slot
+        alt Bulkhead Full
+            Bulkhead-->>Client: 503 Service Overloaded
+        else Slot Available
+            Bulkhead->>CircuitBreaker: Check State
+            alt Circuit Open
+                CircuitBreaker-->>Client: Fail Fast (503)
+            else Circuit Closed
+                CircuitBreaker->>RetryBudget: Check Budget
+                alt Budget Exhausted
+                    RetryBudget-->>Client: Fail Fast (503)
+                else Budget Available
+                    RetryBudget->>Service: Call Service
+                    alt Service Success
+                        Service-->>Client: 200 Success
+                    else Service Failure
+                        Service->>RetryBudget: Record Retry
+                        RetryBudget->>CircuitBreaker: Record Failure
+                        CircuitBreaker-->>Client: 500 Error
+                    end
+                end
+            end
+            Bulkhead->>Bulkhead: Release Slot
+        end
+    end
+```
+
+## 16. Idempotency Model
 
 ```mermaid
 graph TD
@@ -568,5 +691,6 @@ These Mermaid diagrams can be viewed in:
 - **Red boxes**: Cache (Redis)
 - **Dark Blue boxes**: Audit store (MongoDB)
 - **Green boxes**: Event/messaging systems (Kafka)
+- **Gold boxes**: Resilience patterns (Circuit Breaker, Retry Budget, Bulkhead, Graceful Draining)
 - **Light colors**: Application components
 - **Dark colors**: Infrastructure components

@@ -7,6 +7,13 @@ from flask import Flask, request, jsonify
 from logger import get_logger
 from config import settings
 
+# Import resilience patterns for graceful draining and protection
+from resilience import (
+    get_resilience_manager,
+    CircuitOpenError,
+    BulkheadFullError,
+)
+
 # Import our service functions
 from service import (
     resolve_endpoint,
@@ -127,23 +134,43 @@ def register_routes(app: Flask):
         Readiness means the service is ready to accept traffic.
         This checks if all dependencies (database, cache, kafka) are available.
         
+        IMPORTANT: This endpoint also checks if the server is draining.
+        If draining, we return 503 (not ready) so load balancers stop sending traffic.
+        
         Kubernetes uses this to know when to start sending traffic.
         If this fails, Kubernetes won't send requests to this instance.
         
         Returns:
             JSON response with readiness status and dependency checks
         """
+        # Get resilience manager to check draining status
+        manager = get_resilience_manager()
+        
+        # Check if server is draining
+        # If draining, we're not ready to accept new traffic
+        is_draining = manager.drainer.is_draining()
+        
         checks = {
             "database": check_database(),
             "cache": check_cache(),
             "kafka": check_kafka(),
             "mongodb": check_mongodb(),
+            "draining": {
+                "status": "draining" if is_draining else "not_draining",
+                "in_flight_requests": manager.drainer.get_in_flight_count(),
+                "message": "Server is draining and not accepting new requests" if is_draining else "Server is ready"
+            }
         }
         
-        # Service is ready if all critical dependencies are healthy
+        # Service is ready if:
+        # 1. All critical dependencies are healthy
+        # 2. Server is NOT draining
         # Database is critical (can't work without it)
         # Cache, Kafka, and MongoDB are non-critical (can degrade gracefully)
-        all_ready = checks["database"]["status"] == "healthy"
+        all_ready = (
+            checks["database"]["status"] == "healthy" and
+            not is_draining
+        )
         
         status_code = 200 if all_ready else 503  # 503 = Service Unavailable
         
@@ -175,6 +202,48 @@ def register_routes(app: Flask):
             "service": "traffic-manager"
         }), 200
     
+    @app.route('/health/resilience', methods=['GET'])
+    def resilience_metrics():
+        """
+        Resilience patterns metrics endpoint.
+        
+        This endpoint exposes metrics from all resilience patterns:
+        - Circuit breaker states and failure rates
+        - Retry budget usage
+        - Bulkhead utilization
+        - Graceful draining status
+        
+        This is useful for:
+        - Monitoring resilience pattern health
+        - Debugging why requests are failing
+        - Understanding system behavior under load
+        - Interview preparation (seeing patterns in action)
+        
+        Returns:
+            JSON response with resilience metrics
+        
+        Example:
+            GET /health/resilience
+        
+        Response includes:
+        - circuit_breakers: State, failure rates, total calls
+        - retry_budgets: Current usage, budget remaining
+        - bulkheads: Current usage, utilization percentage
+        - graceful_draining: Draining status, in-flight requests
+        """
+        try:
+            manager = get_resilience_manager()
+            metrics = manager.get_all_metrics()
+            
+            return jsonify(metrics), 200
+            
+        except Exception as e:
+            logger.error(f"Error retrieving resilience metrics: {e}", exc_info=True)
+            return jsonify({
+                "error": "Internal server error",
+                "message": "An unexpected error occurred"
+            }), 500
+    
     # ============================================
     # Read Path Endpoints
     # ============================================
@@ -188,6 +257,11 @@ def register_routes(app: Flask):
         This is the read path - it finds the URL for a route.
         It uses caching for performance (fast path).
         
+        This endpoint is protected by:
+        - Graceful draining: Rejects requests during shutdown
+        - Bulkhead: Limits concurrent read operations
+        - Circuit breaker: Fails fast if database is down
+        
         Query Parameters:
             tenant: Tenant name (required)
             service: Service name (required)
@@ -200,59 +274,121 @@ def register_routes(app: Flask):
         Example:
             GET /api/v1/routes/resolve?tenant=team-a&service=payments&env=prod&version=v2
         """
-        # Get query parameters from the request
-        # Query parameters are in the URL: ?tenant=team-a&service=payments
-        tenant = request.args.get('tenant')
-        service = request.args.get('service')
-        env = request.args.get('env')
-        version = request.args.get('version')
+        # Get resilience manager for graceful draining and bulkhead
+        manager = get_resilience_manager()
         
-        # Validate that all required parameters are provided
-        # Input validation is important for security and user experience
-        if not all([tenant, service, env, version]):
-            return jsonify({
-                "error": "Missing required parameters",
-                "required": ["tenant", "service", "env", "version"]
-            }), 400  # 400 = Bad Request
-        
+        # Step 1: Check if server is draining (graceful draining)
+        # If draining, reject new requests immediately
         try:
-            # Get connection from pool (production pattern)
-            # Using 'with' statement ensures connection is returned to pool
-            with get_connection() as conn:
-                # Call the service function to resolve the endpoint
-                # This handles caching, database queries, etc.
-                url = resolve_endpoint(conn, tenant, service, env, version)
-            
-            # Return success response with the URL
-            # 200 = OK (success)
+            with manager.drainer.process_request():
+                # Step 2: Acquire bulkhead slot (resource isolation)
+                # This limits concurrent read operations
+                # If too many reads are running, wait (up to timeout)
+                with manager.read_bulkhead.acquire():
+                    # Get query parameters from the request
+                    # Query parameters are in the URL: ?tenant=team-a&service=payments
+                    tenant = request.args.get('tenant')
+                    service = request.args.get('service')
+                    env = request.args.get('env')
+                    version = request.args.get('version')
+                    
+                    # Validate that all required parameters are provided
+                    # Input validation is important for security and user experience
+                    if not all([tenant, service, env, version]):
+                        return jsonify({
+                            "error": "Missing required parameters",
+                            "required": ["tenant", "service", "env", "version"]
+                        }), 400  # 400 = Bad Request
+                    
+                    try:
+                        # Step 3: Use circuit breaker to protect database call
+                        # If database is failing, circuit breaker fails fast
+                        # This prevents waiting for timeouts
+                        from db.pool import get_connection
+                        
+                        def _resolve():
+                            with get_connection() as conn:
+                                return resolve_endpoint(conn, tenant, service, env, version)
+                        
+                        # Call with circuit breaker protection
+                        # If circuit is open, this raises CircuitOpenError immediately
+                        url = manager.db_circuit.call(_resolve)
+                        
+                        # Return success response with the URL
+                        # 200 = OK (success)
+                        return jsonify({
+                            "tenant": tenant,
+                            "service": service,
+                            "env": env,
+                            "version": version,
+                            "url": url
+                        }), 200
+                        
+                    except CircuitOpenError:
+                        # Circuit breaker is open - database is failing
+                        # Try to return cached data as fallback
+                        logger.warning(
+                            f"Database circuit breaker is OPEN, attempting cache fallback"
+                        )
+                        try:
+                            from cache import get_redis_client
+                            redis_client = get_redis_client()
+                            cache_key = f"route:{tenant}:{service}:{env}:{version}"
+                            cached_url = redis_client.get(cache_key)
+                            
+                            if cached_url and cached_url != "__NOT_FOUND__":
+                                logger.info("Returning cached data (circuit breaker fallback)")
+                                return jsonify({
+                                    "tenant": tenant,
+                                    "service": service,
+                                    "env": env,
+                                    "version": version,
+                                    "url": cached_url,
+                                    "source": "cache_fallback"
+                                }), 200
+                        except Exception:
+                            pass  # Cache also failed, continue to error
+                        
+                        # No cache fallback available, return error
+                        return jsonify({
+                            "error": "Service temporarily unavailable",
+                            "message": "Database is currently unavailable. Please try again later."
+                        }), 503  # 503 = Service Unavailable
+                        
+                    except RouteNotFoundError as e:
+                        # Route doesn't exist - return 404 Not Found
+                        # This is the correct HTTP status code for "resource not found"
+                        return jsonify({
+                            "error": "Route not found",
+                            "message": str(e),
+                            "tenant": tenant,
+                            "service": service,
+                            "env": env,
+                            "version": version
+                        }), 404
+                        
+                    except Exception as e:
+                        # Unexpected error - log it and return 500 Internal Server Error
+                        # 500 means something went wrong on our side (not the client's fault)
+                        logger.error(f"Error resolving route: {e}", exc_info=True)
+                        return jsonify({
+                            "error": "Internal server error",
+                            "message": "An unexpected error occurred"
+                        }), 500
+                        
+        except RuntimeError:
+            # Server is draining, reject request
             return jsonify({
-                "tenant": tenant,
-                "service": service,
-                "env": env,
-                "version": version,
-                "url": url
-            }), 200
-            
-        except RouteNotFoundError as e:
-            # Route doesn't exist - return 404 Not Found
-            # This is the correct HTTP status code for "resource not found"
+                "error": "Service is shutting down",
+                "message": "Server is draining and not accepting new requests"
+            }), 503  # 503 = Service Unavailable
+        
+        except BulkheadFullError:
+            # Bulkhead is full, too many concurrent operations
             return jsonify({
-                "error": "Route not found",
-                "message": str(e),
-                "tenant": tenant,
-                "service": service,
-                "env": env,
-                "version": version
-            }), 404
-            
-        except Exception as e:
-            # Unexpected error - log it and return 500 Internal Server Error
-            # 500 means something went wrong on our side (not the client's fault)
-            logger.error(f"Error resolving route: {e}", exc_info=True)
-            return jsonify({
-                "error": "Internal server error",
-                "message": "An unexpected error occurred"
-            }), 500
+                "error": "Service overloaded",
+                "message": "Too many concurrent requests. Please try again later."
+            }), 503  # 503 = Service Unavailable
     
     # ============================================
     # Write Path Endpoints
@@ -267,6 +403,11 @@ def register_routes(app: Flask):
         This is the write path - it creates a new route in the database.
         It uses database transactions for atomicity (all or nothing).
         After successful creation, it publishes a Kafka event.
+        
+        This endpoint is protected by:
+        - Graceful draining: Rejects requests during shutdown
+        - Bulkhead: Limits concurrent write operations
+        - Circuit breaker: Fails fast if database is down
         
         Request Body (JSON):
             {
@@ -290,54 +431,90 @@ def register_routes(app: Flask):
                 "url": "https://payments.example.com/v2"
             }
         """
-        # Get JSON data from request body
-        # request.json automatically parses JSON and converts to Python dict
-        data = request.get_json()
+        # Get resilience manager for graceful draining and bulkhead
+        manager = get_resilience_manager()
         
-        if not data:
-            return jsonify({
-                "error": "Request body must be JSON"
-            }), 400
-        
-        # Extract parameters from request body
-        # Using .get() with defaults is safer than direct access (won't crash if missing)
-        tenant = data.get('tenant')
-        service = data.get('service')
-        env = data.get('env')
-        version = data.get('version')
-        url = data.get('url')
-        
-        # Validate required fields
-        if not all([tenant, service, env, version, url]):
-            return jsonify({
-                "error": "Missing required fields",
-                "required": ["tenant", "service", "env", "version", "url"]
-            }), 400
-        
+        # Step 1: Check if server is draining (graceful draining)
         try:
-            # Get connection from pool and create route
-            # The service function handles the database transaction
-            with get_connection() as conn:
-                route = create_route(conn, tenant, service, env, version, url)
-            
-            # Return success response with created route
-            # 201 = Created (successful creation)
-            return jsonify(route), 201
-            
-        except ValueError as e:
-            # Validation error - client sent invalid data
+            with manager.drainer.process_request():
+                # Step 2: Acquire write bulkhead slot (resource isolation)
+                # Writes are slower, so we limit concurrent writes separately
+                with manager.write_bulkhead.acquire():
+                    # Get JSON data from request body
+                    # request.json automatically parses JSON and converts to Python dict
+                    data = request.get_json()
+                    
+                    if not data:
+                        return jsonify({
+                            "error": "Request body must be JSON"
+                        }), 400
+                    
+                    # Extract parameters from request body
+                    # Using .get() with defaults is safer than direct access (won't crash if missing)
+                    tenant = data.get('tenant')
+                    service = data.get('service')
+                    env = data.get('env')
+                    version = data.get('version')
+                    url = data.get('url')
+                    
+                    # Validate required fields
+                    if not all([tenant, service, env, version, url]):
+                        return jsonify({
+                            "error": "Missing required fields",
+                            "required": ["tenant", "service", "env", "version", "url"]
+                        }), 400
+                    
+                    try:
+                        # Step 3: Use circuit breaker to protect database call
+                        from db.pool import get_connection
+                        
+                        def _create():
+                            with get_connection() as conn:
+                                return create_route(conn, tenant, service, env, version, url)
+                        
+                        # Call with circuit breaker protection
+                        route = manager.db_circuit.call(_create)
+                        
+                        # Return success response with created route
+                        # 201 = Created (successful creation)
+                        return jsonify(route), 201
+                        
+                    except CircuitOpenError:
+                        # Circuit breaker is open - database is failing
+                        logger.error("Database circuit breaker is OPEN, cannot create route")
+                        return jsonify({
+                            "error": "Service temporarily unavailable",
+                            "message": "Database is currently unavailable. Please try again later."
+                        }), 503  # 503 = Service Unavailable
+                        
+                    except ValueError as e:
+                        # Validation error - client sent invalid data
+                        return jsonify({
+                            "error": "Validation error",
+                            "message": str(e)
+                        }), 400
+                        
+                    except Exception as e:
+                        # Unexpected error
+                        logger.error(f"Error creating route: {e}", exc_info=True)
+                        return jsonify({
+                            "error": "Internal server error",
+                            "message": "An unexpected error occurred"
+                        }), 500
+                        
+        except RuntimeError:
+            # Server is draining, reject request
             return jsonify({
-                "error": "Validation error",
-                "message": str(e)
-            }), 400
-            
-        except Exception as e:
-            # Unexpected error
-            logger.error(f"Error creating route: {e}", exc_info=True)
+                "error": "Service is shutting down",
+                "message": "Server is draining and not accepting new requests"
+            }), 503
+        
+        except BulkheadFullError:
+            # Bulkhead is full, too many concurrent writes
             return jsonify({
-                "error": "Internal server error",
-                "message": "An unexpected error occurred"
-            }), 500
+                "error": "Service overloaded",
+                "message": "Too many concurrent write operations. Please try again later."
+            }), 503
     
     @app.route('/api/v1/routes/activate', methods=['POST'])
     def activate_route_endpoint():
