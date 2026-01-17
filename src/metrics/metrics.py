@@ -99,3 +99,15 @@ DB_QUERIES_TOTAL = Counter(
     "db_queries_total",
     "Total number of database queries executed",
 )
+
+# Tracking metrics
+# These track correlation ID usage for end-to-end request tracking
+CORRELATION_IDS_GENERATED_TOTAL = Counter(
+    "correlation_ids_generated_total",
+    "Total number of correlation IDs generated (when not provided by client)",
+)
+
+CORRELATION_IDS_PROVIDED_TOTAL = Counter(
+    "correlation_ids_provided_total",
+    "Total number of correlation IDs provided by clients via X-Correlation-ID header",
+)

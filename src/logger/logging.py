@@ -15,6 +15,39 @@ from typing import Optional
 # ERROR: A serious problem occurred, some function failed
 # CRITICAL: A serious error occurred, the program itself may be unable to continue
 
+
+class CorrelationIDFilter(logging.Filter):
+    """
+    Logging filter that adds correlation ID to all log records.
+    
+    This filter automatically includes the correlation ID in every log message,
+    making it easy to trace requests through the system.
+    """
+    
+    def filter(self, record):
+        """
+        Add correlation ID to log record if available.
+        
+        Args:
+            record: Log record to modify
+        
+        Returns:
+            True (always allow the log record)
+        """
+        try:
+            from tracking.correlation import get_correlation_id
+            correlation_id = get_correlation_id()
+            if correlation_id:
+                record.correlation_id = correlation_id
+            else:
+                record.correlation_id = "-"
+        except (ImportError, Exception):
+            # If tracking module is not available or there's an error, use "-"
+            record.correlation_id = "-"
+        
+        return True
+
+
 def setup_logging(level: Optional[str] = None):
     """
     Configure logging for the entire application.
@@ -40,22 +73,32 @@ def setup_logging(level: Optional[str] = None):
     # logging.INFO, logging.DEBUG, etc. are numbers that Python uses internally
     numeric_level = getattr(logging, log_level.upper(), logging.INFO)
     
+    # Create a custom formatter that includes correlation ID
+    # Format explanation:
+    # %(asctime)s: Timestamp (when the log was created)
+    # %(correlation_id)s: Correlation ID for request tracking (added by filter)
+    # %(name)s: Name of the logger (usually the module/file name)
+    # %(levelname)s: Log level (INFO, WARNING, ERROR, etc.)
+    # %(message)s: The actual log message
+    formatter = logging.Formatter(
+        '%(asctime)s - [%(correlation_id)s] - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Create a handler for console output
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    
+    # Add correlation ID filter to the handler
+    handler.addFilter(CorrelationIDFilter())
+    
     # Configure the root logger (the main logger that all others inherit from)
     # basicConfig() sets up the default logging behavior
     logging.basicConfig(
         level=numeric_level,  # Only show messages at this level or higher
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        # Format explanation:
-        # %(asctime)s: Timestamp (when the log was created)
-        # %(name)s: Name of the logger (usually the module/file name)
-        # %(levelname)s: Log level (INFO, WARNING, ERROR, etc.)
-        # %(message)s: The actual log message
-        handlers=[
-            logging.StreamHandler(sys.stdout)  # Send logs to console (stdout)
-            # We could add more handlers here, like:
-            # - FileHandler: write logs to a file
-            # - RotatingFileHandler: write to files that rotate when they get too big
-        ]
+        handlers=[handler]
+        # We could add more handlers here, like:
+        # - FileHandler: write logs to a file
+        # - RotatingFileHandler: write to files that rotate when they get too big
     )
 
 def get_logger(name: Optional[str] = None):

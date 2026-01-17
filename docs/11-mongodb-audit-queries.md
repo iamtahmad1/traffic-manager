@@ -41,13 +41,65 @@ Each audit event is stored as a MongoDB document with the following structure:
 
 The following indexes are automatically created for efficient querying:
 
-1. **Compound index on route fields + occurred_at**: `route.tenant`, `route.service`, `route.env`, `route.version`, `occurred_at`
-   - Supports route-specific queries and history retrieval
-   
-2. **Index on occurred_at**: For time-based queries
-   - Supports "last 30/90 days" queries
-   
-3. **Index on action + occurred_at**: For filtering by action type
+### 1. Compound Index: Route Fields + Timestamp
+**Fields**: `route.tenant`, `route.service`, `route.env`, `route.version`, `occurred_at`
+- **Purpose**: Optimize route-specific history queries
+- **Order**: Tenant → Service → Env → Version → Timestamp (most selective first)
+- **Coverage**: Supports queries filtering by route and sorting by time
+- **Query Performance**: O(log n) instead of O(n) full collection scan
+- **Example Query Using This Index**:
+  ```javascript
+  db.route_events.find({
+    "route.tenant": "team-a",
+    "route.service": "payments",
+    "route.env": "prod",
+    "route.version": "v2"
+  }).sort({ "occurred_at": -1 })
+  ```
+- **Index Size**: ~100 bytes per document (estimated)
+- **Maintenance**: Automatically maintained by MongoDB
+
+### 2. Single-Field Index: Timestamp
+**Field**: `occurred_at`
+- **Purpose**: Optimize time-range queries
+- **Query Performance**: O(log n) for time-based filters
+- **Example Query Using This Index**:
+  ```javascript
+  db.route_events.find({
+    "occurred_at": { $gte: ISODate("2024-01-01"), $lte: ISODate("2024-01-31") }
+  })
+  ```
+- **Use Case**: "Show all events in last 30 days" queries
+
+### 3. Compound Index: Action + Timestamp
+**Fields**: `action`, `occurred_at`
+- **Purpose**: Optimize action-filtered queries
+- **Query Performance**: Efficient filtering by action type
+- **Example Query Using This Index**:
+  ```javascript
+  db.route_events.find({
+    "action": "deactivated"
+  }).sort({ "occurred_at": -1 })
+  ```
+
+### Index Strategy Explanation
+
+**Why Compound Indexes?**
+- MongoDB can use compound indexes for queries matching the left prefix
+- Example: Index on `(A, B, C)` can be used for queries on `A`, `(A, B)`, or `(A, B, C)`
+- Order matters: Most selective fields first
+
+**Index Selection**:
+- MongoDB query planner automatically selects best index
+- Use `explain()` to see which index is used:
+  ```javascript
+  db.route_events.find({...}).explain("executionStats")
+  ```
+
+**Index Maintenance**:
+- Indexes are automatically updated on writes
+- Slight write performance impact (acceptable for audit logs)
+- Monitor index usage with `db.route_events.getIndexes()`
    - Supports debugging outages by config changes
    
 4. **Unique index on event_id**: For deduplication

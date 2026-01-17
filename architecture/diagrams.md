@@ -10,6 +10,10 @@ graph TB
         Client[Client Application]
     end
     
+    subgraph "Tracking Layer"
+        TR[Correlation ID<br/>Tracking]
+    end
+    
     subgraph "Resilience Layer"
         CB[Circuit Breakers]
         RB[Retry Budgets]
@@ -38,10 +42,11 @@ graph TB
         Other[Other Consumers]
     end
     
-    Client -->|Read Request| GD
-    Client -->|Write Request| GD
-    Client -->|Audit Query| GD
+    Client -->|Read Request| TR
+    Client -->|Write Request| TR
+    Client -->|Audit Query| TR
     
+    TR -->|Extract/Generate<br/>Correlation ID| GD
     GD -->|If Not Draining| BH
     BH -->|Read Bulkhead| ReadPath
     BH -->|Write Bulkhead| WritePath
@@ -69,6 +74,7 @@ graph TB
     style Redis fill:#ff4e4e
     style MongoDB fill:#4e4eff
     style Kafka fill:#4eff4e
+    style TR fill:#ffd4a3
     style CB fill:#ffd700
     style RB fill:#ffd700
     style BH fill:#ffd700
@@ -80,34 +86,45 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Tracking
     participant ReadPath
     participant Redis
     participant PostgreSQL
     participant Metrics
+    participant Logger
     
-    Client->>ReadPath: resolve_endpoint(tenant, service, env, version)
+    Client->>Tracking: HTTP Request (X-Correlation-ID header)
+    Tracking->>Tracking: Extract or Generate Correlation ID
+    Tracking->>ReadPath: resolve_endpoint(tenant, service, env, version)
+    Note over ReadPath,Logger: All logs include correlation_id
     ReadPath->>Metrics: RESOLVE_REQUESTS_TOTAL.inc()
+    ReadPath->>Logger: Log with correlation_id
     
     ReadPath->>Redis: GET cache_key
     alt Cache Hit (Positive)
         Redis-->>ReadPath: URL
         ReadPath->>Metrics: CACHE_HIT_TOTAL.inc()
-        ReadPath-->>Client: Return URL
+        ReadPath->>Logger: Log cache hit with correlation_id
+        ReadPath-->>Client: Return URL (X-Correlation-ID header)
     else Cache Hit (Negative)
         Redis-->>ReadPath: __NOT_FOUND__
         ReadPath->>Metrics: NEGATIVE_CACHE_HIT_TOTAL.inc()
-        ReadPath-->>Client: RouteNotFoundError
+        ReadPath->>Logger: Log negative cache hit with correlation_id
+        ReadPath-->>Client: RouteNotFoundError (X-Correlation-ID header)
     else Cache Miss
         ReadPath->>Metrics: CACHE_MISS_TOTAL.inc()
+        ReadPath->>Logger: Log cache miss with correlation_id
         ReadPath->>PostgreSQL: SELECT endpoint WHERE active=true
         alt Route Found
             PostgreSQL-->>ReadPath: URL
             ReadPath->>Redis: SET cache_key, URL (TTL=60s)
-            ReadPath-->>Client: Return URL
+            ReadPath->>Logger: Log route found with correlation_id
+            ReadPath-->>Client: Return URL (X-Correlation-ID header)
         else Route Not Found
             PostgreSQL-->>ReadPath: NULL
             ReadPath->>Redis: SET cache_key, __NOT_FOUND__ (TTL=10s)
-            ReadPath-->>Client: RouteNotFoundError
+            ReadPath->>Logger: Log route not found with correlation_id
+            ReadPath-->>Client: RouteNotFoundError (X-Correlation-ID header)
         end
     end
     ReadPath->>Metrics: RESOLVE_LATENCY_SECONDS.observe()
@@ -118,13 +135,19 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Tracking
     participant WritePath
     participant PostgreSQL
     participant Kafka
     participant Metrics
+    participant Logger
     
-    Client->>WritePath: create_route(tenant, service, env, version, url)
+    Client->>Tracking: HTTP Request (X-Correlation-ID header)
+    Tracking->>Tracking: Extract or Generate Correlation ID
+    Tracking->>WritePath: create_route(tenant, service, env, version, url)
+    Note over WritePath,Logger: All logs include correlation_id
     WritePath->>Metrics: WRITE_REQUESTS_TOTAL.inc()
+    WritePath->>Logger: Log with correlation_id
     
     WritePath->>WritePath: Validate inputs
     
@@ -138,21 +161,25 @@ sequenceDiagram
     alt Transaction Success
         WritePath->>PostgreSQL: COMMIT
         WritePath->>Metrics: WRITE_SUCCESS_TOTAL.inc()
+        WritePath->>Logger: Log success with correlation_id
         
         par Kafka Event (Best Effort)
-            WritePath->>Kafka: Publish route_changed event
+            WritePath->>Kafka: Publish route_changed event<br/>(includes correlation_id)
             alt Kafka Success
                 Kafka-->>WritePath: ACK
+                WritePath->>Logger: Log event published with correlation_id
             else Kafka Failure
                 Kafka-->>WritePath: Error (logged, non-critical)
+                WritePath->>Logger: Log event failure with correlation_id
             end
         end
         
-        WritePath-->>Client: Return route info
+        WritePath-->>Client: Return route info (X-Correlation-ID header)
     else Transaction Failure
         WritePath->>PostgreSQL: ROLLBACK
         WritePath->>Metrics: WRITE_FAILURE_TOTAL.inc()
-        WritePath-->>Client: Return error
+        WritePath->>Logger: Log failure with correlation_id
+        WritePath-->>Client: Return error (X-Correlation-ID header)
     end
     
     WritePath->>Metrics: WRITE_LATENCY_SECONDS.observe()
@@ -421,10 +448,15 @@ graph LR
     subgraph "Metrics"
         RM[Read Metrics<br/>- Requests<br/>- Cache Hits/Misses<br/>- Latency]
         WM[Write Metrics<br/>- Requests<br/>- Success/Failure<br/>- Latency]
+        TM[Tracking Metrics<br/>- Correlation IDs<br/>- Generated/Provided]
     end
     
     subgraph "Logging"
-        LG[Logger<br/>- Structured Logs<br/>- Levels: DEBUG/INFO/WARN/ERROR]
+        LG[Logger<br/>- Structured Logs<br/>- Correlation IDs<br/>- Levels: DEBUG/INFO/WARN/ERROR]
+    end
+    
+    subgraph "Tracking"
+        TR[Correlation ID<br/>Middleware<br/>- Extract/Generate IDs<br/>- Context Management]
     end
     
     subgraph "Export"
@@ -432,17 +464,23 @@ graph LR
         LS[Log Stream]
     end
     
+    TR --> RP
+    TR --> WP
     RP --> RM
     WP --> WM
+    TR --> TM
     RP --> LG
     WP --> LG
+    TR --> LG
     
     RM --> PM
     WM --> PM
+    TM --> PM
     LG --> LS
     
     style RP fill:#e1f5ff
     style WP fill:#ffe1f5
+    style TR fill:#ffd4a3
     style PM fill:#4eff4e
     style LS fill:#4eff4e
 ```
@@ -499,30 +537,42 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Tracking
     participant WritePath
     participant PostgreSQL
     participant Kafka
     participant AuditConsumer
     participant MongoDB
     participant AuditAPI
+    participant Logger
     
     Note over Client,AuditAPI: Write Path - Audit Logging
-    Client->>WritePath: create_route() / activate_route() / deactivate_route()
+    Client->>Tracking: HTTP Request (X-Correlation-ID header)
+    Tracking->>Tracking: Extract or Generate Correlation ID
+    Tracking->>WritePath: create_route() / activate_route() / deactivate_route()
+    Note over WritePath,Logger: All logs include correlation_id
     WritePath->>PostgreSQL: BEGIN TRANSACTION
     WritePath->>PostgreSQL: INSERT/UPDATE route
     WritePath->>PostgreSQL: COMMIT
-    WritePath->>Kafka: Publish route_changed event
+    WritePath->>Kafka: Publish route_changed event<br/>(includes correlation_id)
+    WritePath->>Logger: Log event published with correlation_id
     
     Note over Kafka,MongoDB: Consumer Processing
-    Kafka->>AuditConsumer: Consume event
-    AuditConsumer->>MongoDB: Insert audit document
+    Kafka->>AuditConsumer: Consume event (with correlation_id)
+    AuditConsumer->>AuditConsumer: Set correlation_id in context
+    Note over AuditConsumer,Logger: All consumer logs include correlation_id
+    AuditConsumer->>MongoDB: Insert audit document<br/>(includes correlation_id)
     MongoDB-->>AuditConsumer: ACK
+    AuditConsumer->>Logger: Log audit saved with correlation_id
     
     Note over Client,AuditAPI: Query Path - Audit Retrieval
-    Client->>AuditAPI: GET /api/v1/audit/route
+    Client->>Tracking: GET /api/v1/audit/route (X-Correlation-ID header)
+    Tracking->>Tracking: Extract or Generate Correlation ID
+    Tracking->>AuditAPI: Query audit events
     AuditAPI->>MongoDB: Query with indexes
-    MongoDB-->>AuditAPI: Return audit events
-    AuditAPI-->>Client: JSON response with history
+    MongoDB-->>AuditAPI: Return audit events (with correlation_ids)
+    AuditAPI->>Logger: Log query with correlation_id
+    AuditAPI-->>Client: JSON response with history (X-Correlation-ID header)
     
     style WritePath fill:#ffe1f5
     style PostgreSQL fill:#fff4e1
@@ -530,6 +580,7 @@ sequenceDiagram
     style AuditConsumer fill:#e1f5ff
     style MongoDB fill:#4e4eff
     style AuditAPI fill:#e1f5ff
+    style Tracking fill:#ffd4a3
 ```
 
 ## 13. Resilience Patterns Architecture
@@ -674,6 +725,60 @@ graph TD
     style SR fill:#90EE90
 ```
 
+## 17. End-to-End Tracking Flow
+
+```mermaid
+graph TB
+    subgraph "Request Entry"
+        Client[Client Request<br/>X-Correlation-ID Header]
+        Tracking[Tracking Middleware<br/>Extract/Generate ID]
+    end
+    
+    subgraph "Request Processing"
+        API[API Layer<br/>Correlation ID in Context]
+        Service[Service Layer<br/>Correlation ID in Logs]
+        DB[(Database<br/>Queries)]
+        Cache[(Redis Cache<br/>Operations)]
+    end
+    
+    subgraph "Event Publishing"
+        Kafka[Kafka Event<br/>Includes Correlation ID]
+    end
+    
+    subgraph "Event Consumption"
+        Consumer[Kafka Consumer<br/>Sets Correlation ID]
+        Audit[(MongoDB<br/>Audit Store)]
+    end
+    
+    subgraph "Observability"
+        Logs[Structured Logs<br/>All Include Correlation ID]
+        Metrics[Prometheus Metrics<br/>Correlation ID Tracking]
+    end
+    
+    Client -->|X-Correlation-ID| Tracking
+    Tracking -->|Set in Context| API
+    API --> Service
+    Service --> DB
+    Service --> Cache
+    Service --> Kafka
+    Service --> Logs
+    
+    Kafka -->|Event with correlation_id| Consumer
+    Consumer -->|Set in Context| Consumer
+    Consumer --> Audit
+    Consumer --> Logs
+    
+    Tracking --> Metrics
+    Service --> Metrics
+    Consumer --> Metrics
+    
+    style Tracking fill:#ffd4a3
+    style Logs fill:#4eff4e
+    style Metrics fill:#4eff4e
+    style Kafka fill:#4eff4e
+    style Consumer fill:#e1f5ff
+```
+
 ## How to View These Diagrams
 
 These Mermaid diagrams can be viewed in:
@@ -692,5 +797,6 @@ These Mermaid diagrams can be viewed in:
 - **Dark Blue boxes**: Audit store (MongoDB)
 - **Green boxes**: Event/messaging systems (Kafka)
 - **Gold boxes**: Resilience patterns (Circuit Breaker, Retry Budget, Bulkhead, Graceful Draining)
+- **Orange boxes**: Tracking/Correlation ID components
 - **Light colors**: Application components
 - **Dark colors**: Infrastructure components

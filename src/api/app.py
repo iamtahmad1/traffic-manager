@@ -39,6 +39,9 @@ from monitoring import (
     setup_request_monitoring,
 )
 
+# Import tracking middleware for correlation IDs
+from tracking.middleware import setup_correlation_tracking
+
 logger = get_logger(__name__)
 
 
@@ -76,6 +79,10 @@ def create_app():
     # This sets up the /metrics endpoint for Prometheus
     setup_metrics_endpoint(app)
     
+    # Set up correlation ID tracking middleware
+    # This extracts or generates correlation IDs for end-to-end request tracking
+    setup_correlation_tracking(app)
+    
     # Set up request monitoring middleware
     # This automatically tracks all API requests (count, latency, status codes)
     setup_request_monitoring(app)
@@ -86,6 +93,7 @@ def create_app():
     
     logger.info(f"Flask application created: debug={settings.app.debug}")
     logger.info("Monitoring enabled: /metrics endpoint available for Prometheus")
+    logger.info("Correlation ID tracking enabled: X-Correlation-ID header supported")
     
     return app
 

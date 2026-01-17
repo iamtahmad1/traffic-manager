@@ -10,6 +10,7 @@ Traffic Manager is a production-ready service for managing, routing, and control
 - 📊 **Observable** - Prometheus metrics and health checks
 - 📝 **Audit Trail** - MongoDB-based audit store with rich querying capabilities
 - 🛡️ **Resilient** - Circuit breakers, retry budgets, bulkheads, graceful draining
+- 🔍 **End-to-End Tracking** - Correlation IDs for tracing requests across all components
 - 🏗️ **Production-Ready** - Centralized config, pooling, monitoring, resilience patterns
 - 📚 **Well-Documented** - Extensive comments and documentation for learning
 
@@ -18,6 +19,7 @@ Traffic Manager is a production-ready service for managing, routing, and control
 Traffic Manager follows a layered architecture:
 
 - **API Layer**: REST endpoints for route management and audit queries
+- **Tracking Layer**: Correlation ID management for end-to-end request tracing
 - **Resilience Layer**: Circuit breakers, retry budgets, bulkheads, graceful draining
 - **Service Layer**: Business logic for read/write paths and audit queries
 - **Cache Layer**: Redis for fast reads (cache-aside pattern)
@@ -684,6 +686,7 @@ For detailed structure information, see [src/STRUCTURE.md](src/STRUCTURE.md).
 - **[Database Design](docs/05-database-design-principles.md)** - Schema design and transactions
 - **[Scalability Patterns](docs/06-scalability-patterns.md)** - Horizontal scaling and load balancing
 - **[Failure Handling](docs/07-failure-handling-resilience.md)** - Resilience patterns
+- **[End-to-End Tracking](docs/20-end-to-end-tracking.md)** - Correlation ID tracking and distributed tracing
 - **[Production Readiness](docs/08-production-readiness.md)** - Production patterns assessment
 - **[Implemented Patterns](docs/09-production-patterns-implemented.md)** - What's been implemented
 - **[Monitoring Guide](docs/10-monitoring-guide.md)** - Monitoring setup and usage

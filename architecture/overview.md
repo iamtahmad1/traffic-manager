@@ -201,9 +201,12 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
   "env": "prod",
   "version": "v2",
   "url": "https://...",
-  "occurred_at": "RFC3339 timestamp"
+  "occurred_at": "RFC3339 timestamp",
+  "correlation_id": "req-abc123def456"
 }
 ```
+
+**Correlation ID Tracking**: All events include the correlation ID from the original request, enabling end-to-end tracing through event consumers.
 
 **Partitioning**: By `{tenant}:{service}:{env}:{version}` to ensure ordering per route
 
@@ -253,7 +256,22 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
 **Logging** (`logger/logging.py`):
 - Centralized logging configuration
 - Structured logs with timestamps, levels, and context
+- **Correlation ID tracking**: All logs automatically include correlation IDs for end-to-end request tracing
 - Log levels: DEBUG, INFO, WARNING, ERROR
+- Log format: `%(asctime)s - [%(correlation_id)s] - %(name)s - %(levelname)s - %(message)s`
+
+**Request Tracking** (`tracking/`):
+- **Correlation ID Management**: Unique identifier for each request that flows through all components
+- **HTTP Header Support**: Clients can send `X-Correlation-ID` header to trace their requests
+- **Automatic Generation**: If no correlation ID is provided, one is automatically generated
+- **Context Propagation**: Correlation IDs are automatically propagated through:
+  - API requests
+  - Service layer operations
+  - Database queries (via logs)
+  - Cache operations (via logs)
+  - Kafka events
+  - Consumer processing
+- **Response Headers**: Correlation ID is included in response headers (`X-Correlation-ID`) for client tracking
 
 **Metrics** (`metrics/metrics.py`):
 - **Read Path Metrics**:
@@ -268,6 +286,10 @@ Traffic Manager is a multi-tenant routing control plane that manages and resolve
   - `write_success_total`: Successful writes
   - `write_failure_total`: Failed writes
   - `write_latency_seconds`: Write latency histogram
+
+- **Tracking Metrics**:
+  - `correlation_ids_generated_total`: Total correlation IDs generated (when not provided by client)
+  - `correlation_ids_provided_total`: Total correlation IDs provided by clients via `X-Correlation-ID` header
 
 **Metrics Format**: Prometheus-compatible
 

@@ -14,6 +14,7 @@ from cache import get_redis_client, close_redis_client
 from db.pool import get_connection, initialize_pool, close_pool
 from service.routing import resolve_endpoint, RouteNotFoundError
 from mongodb_client import get_mongodb_client, close_mongodb_client, insert_audit_event
+from tracking.correlation import correlation_context
 
 logger = get_logger(__name__)
 
@@ -266,22 +267,30 @@ def run_consumer(consumer_type: str) -> None:
                         # message.value is already deserialized from JSON (see _build_consumer)
                         event = message.value
                         
-                        # Log that we received an event (helpful for debugging)
-                        if consumer_type == "audit_log":
-                            logger.debug(
-                                f"Received audit event #{message_count}: "
-                                f"action={event.get('action')}, "
-                                f"route={event.get('tenant')}/{event.get('service')}/"
-                                f"{event.get('env')}/{event.get('version')}, "
-                                f"event_id={event.get('event_id')}"
-                            )
+                        # Extract correlation ID from event (if present)
+                        # This allows tracing consumer processing back to the original request
+                        correlation_id = event.get('correlation_id')
                         
-                        # Call the appropriate handler for this consumer type
-                        # Each handler processes the event differently:
-                        # - cache_invalidation: Deletes Redis cache keys
-                        # - cache_warming: Pre-loads cache from database
-                        # - audit_log: Stores event in MongoDB
-                        handlers[consumer_type](event)
+                        # Set correlation ID in context for this event processing
+                        # This ensures all logs during event processing include the correlation ID
+                        with correlation_context(correlation_id):
+                            # Log that we received an event (helpful for debugging)
+                            if consumer_type == "audit_log":
+                                logger.debug(
+                                    f"Received audit event #{message_count}: "
+                                    f"action={event.get('action')}, "
+                                    f"route={event.get('tenant')}/{event.get('service')}/"
+                                    f"{event.get('env')}/{event.get('version')}, "
+                                    f"event_id={event.get('event_id')}, "
+                                    f"correlation_id={correlation_id or 'N/A'}"
+                                )
+                            
+                            # Call the appropriate handler for this consumer type
+                            # Each handler processes the event differently:
+                            # - cache_invalidation: Deletes Redis cache keys
+                            # - cache_warming: Pre-loads cache from database
+                            # - audit_log: Stores event in MongoDB
+                            handlers[consumer_type](event)
                     except Exception as e:
                         # Log errors but don't crash the consumer
                         # This allows the consumer to continue processing other messages

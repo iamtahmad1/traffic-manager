@@ -16,6 +16,7 @@ from kafka.errors import KafkaError
 from logger import get_logger
 from config import settings
 from metrics import KAFKA_EVENTS_PUBLISHED_TOTAL, KAFKA_EVENTS_FAILED_TOTAL
+from tracking.correlation import get_correlation_id
 
 logger = get_logger(__name__)
 
@@ -165,6 +166,10 @@ def publish_route_event(
     # Example: "2024-01-14T17:30:00Z"
     occurred_at = datetime.utcnow().isoformat() + "Z"
     
+    # Get correlation ID from current request context
+    # This allows tracing events back to the original request
+    correlation_id = get_correlation_id()
+    
     # Build the event payload (the data we're sending)
     # This matches the format described in write_path.md
     event = {
@@ -176,7 +181,8 @@ def publish_route_event(
         "env": env,
         "version": version,
         "url": url,
-        "occurred_at": occurred_at
+        "occurred_at": occurred_at,
+        "correlation_id": correlation_id  # Add correlation ID for end-to-end tracking
     }
     
     # Create partition key from route identifiers
