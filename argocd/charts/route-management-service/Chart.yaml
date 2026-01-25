@@ -1,0 +1,6 @@
+apiVersion: v2
+name: route-management-service
+description: Traffic Manager route management (write path) service
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

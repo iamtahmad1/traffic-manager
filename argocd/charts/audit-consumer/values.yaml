@@ -1,0 +1,79 @@
+replicaCount: 1
+revisionHistoryLimit: 3
+terminationGracePeriodSeconds: 30
+
+image:
+  repository: docker.io/iamtahmad1/traffic-manager-audit-consumer
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+
+service:
+  enabled: false
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+
+containerPort: null
+
+env:
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "app_db"
+  DB_USER: "app_user"
+  MONGODB_HOST: "mongo"
+  MONGODB_PORT: "27017"
+  MONGODB_DB: "audit_db"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+
+secretEnv: {}
+
+probes:
+  enabled: false
+  path: /health
+  port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 6
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 75
+
+pdb:
+  enabled: false
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

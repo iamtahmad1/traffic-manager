@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cache-warming-consumer
+description: Traffic Manager cache warming consumer
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

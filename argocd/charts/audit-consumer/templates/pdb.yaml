@@ -1,0 +1,13 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "traffic-manager.fullname" . }}
+  labels:
+    {{- include "traffic-manager.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "traffic-manager.selectorLabels" . | nindent 6 }}
+{{- end }}

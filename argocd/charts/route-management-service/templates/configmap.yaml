@@ -1,0 +1,12 @@
+{{- if gt (len .Values.env) 0 }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "traffic-manager.fullname" . }}
+  labels:
+    {{- include "traffic-manager.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+{{- end }}
