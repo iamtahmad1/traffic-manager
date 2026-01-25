@@ -16,6 +16,7 @@ env:
   REGISTRY: docker.io
   SERVICE_NAME: cache-invalidation-consumer
   IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/traffic-manager-${{ env.SERVICE_NAME }}
+  PLATFORMS: linux/amd64
 
 jobs:
   build-and-push:
@@ -29,6 +30,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Validate Docker Hub secrets
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "Missing DOCKERHUB_USERNAME or DOCKERHUB_TOKEN secrets." >&2
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -59,6 +70,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
-          platforms: linux/amd64,linux/arm64
+          cache-from: |
+            type=gha
+            type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
+          platforms: ${{ env.PLATFORMS }}
