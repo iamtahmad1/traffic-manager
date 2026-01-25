@@ -5,7 +5,7 @@ terminationGracePeriodSeconds: 30
 image:
   repository: docker.io/iamtahmad1/traffic-manager-cache-warming-consumer
   tag: "latest"
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 imagePullSecrets: []
 nameOverride: ""

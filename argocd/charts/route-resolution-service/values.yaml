@@ -5,7 +5,7 @@ terminationGracePeriodSeconds: 30
 image:
   repository: docker.io/iamtahmad1/traffic-manager-route-resolution-service
   tag: "latest"
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 imagePullSecrets: []
 nameOverride: ""
