@@ -15,6 +15,7 @@ on:
 env:
   REGISTRY: docker.io
   SERVICE_NAME: audit-consumer
+  IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/traffic-manager-${{ env.SERVICE_NAME }}
 
 jobs:
   build-and-push:
@@ -42,7 +43,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_REPO }}-${{ env.SERVICE_NAME }}
+          images: ${{ env.IMAGE_REPO }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -58,6 +59,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_REPO }}-${{ env.SERVICE_NAME }}:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_REPO }}-${{ env.SERVICE_NAME }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
           platforms: linux/amd64,linux/arm64

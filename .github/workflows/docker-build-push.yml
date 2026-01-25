@@ -10,8 +10,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  # DOCKERHUB_REPO will be set as a GitHub secret
-  # Format: username/repo-name (e.g., myusername/traffic-manager)
+  IMAGE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/traffic-manager
 
 jobs:
   build-and-push:
@@ -39,7 +38,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_REPO }}
+          images: ${{ env.IMAGE_REPO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -56,8 +55,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_REPO }}:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_REPO }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
           platforms: linux/amd64,linux/arm64
 
       - name: Image digest

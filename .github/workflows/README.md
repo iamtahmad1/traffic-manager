@@ -41,16 +41,17 @@ Configure these secrets in GitHub repository settings:
 
 1. **DOCKERHUB_USERNAME**: Your Docker Hub username
 2. **DOCKERHUB_TOKEN**: Your Docker Hub access token
-3. **DOCKERHUB_REPO**: Base repository name (e.g., `myusername/traffic-manager`)
+
+No repository name secret is required; image names are derived from `DOCKERHUB_USERNAME`.
 
 ### Image Naming
 
 Images will be pushed as:
-- `{DOCKERHUB_REPO}-route-resolution-service:latest`
-- `{DOCKERHUB_REPO}-route-management-service:latest`
-- `{DOCKERHUB_REPO}-cache-invalidation-consumer:latest`
-- `{DOCKERHUB_REPO}-cache-warming-consumer:latest`
-- `{DOCKERHUB_REPO}-audit-consumer:latest`
+- `{DOCKERHUB_USERNAME}/traffic-manager-route-resolution-service:latest`
+- `{DOCKERHUB_USERNAME}/traffic-manager-route-management-service:latest`
+- `{DOCKERHUB_USERNAME}/traffic-manager-cache-invalidation-consumer:latest`
+- `{DOCKERHUB_USERNAME}/traffic-manager-cache-warming-consumer:latest`
+- `{DOCKERHUB_USERNAME}/traffic-manager-audit-consumer:latest`
 
 ## Image Tags
 
