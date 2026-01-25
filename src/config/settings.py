@@ -9,7 +9,7 @@
 
 import os
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # dataclass is a Python feature that automatically generates special methods
 # like __init__, __repr__, etc. for classes that just hold data
@@ -201,19 +201,19 @@ class Settings:
     This pattern is called "configuration as code" - all settings in one place.
     """
     # Database configuration
-    db: DatabaseConfig = DatabaseConfig()
+    db: DatabaseConfig = field(default_factory=DatabaseConfig)
     
     # Redis cache configuration
-    redis: RedisConfig = RedisConfig()
+    redis: RedisConfig = field(default_factory=RedisConfig)
     
     # MongoDB audit store configuration
-    mongodb: MongoDBConfig = MongoDBConfig()
+    mongodb: MongoDBConfig = field(default_factory=MongoDBConfig)
     
     # Kafka configuration
-    kafka: KafkaConfig = KafkaConfig()
+    kafka: KafkaConfig = field(default_factory=KafkaConfig)
     
     # Application configuration
-    app: AppConfig = AppConfig()
+    app: AppConfig = field(default_factory=AppConfig)
     
     def validate(self):
         """
