@@ -10,6 +10,21 @@
 import os
 from typing import Optional
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
+
+
+def _parse_port(port_value: str, default_port: int) -> int:
+    """
+    Normalize port values.
+
+    Kubernetes service links can inject values like tcp://10.43.31.23:6379,
+    which would break int() casting. This helper extracts the port if needed.
+    """
+    if port_value.startswith("tcp://"):
+        parsed = urlparse(port_value)
+        if parsed.port:
+            return parsed.port
+    return int(port_value or default_port)
 
 # dataclass is a Python feature that automatically generates special methods
 # like __init__, __repr__, etc. for classes that just hold data
@@ -29,7 +44,7 @@ class DatabaseConfig:
     
     # Port is like a door number - PostgreSQL default is 5432
     # int() converts the string from environment to a number
-    port: int = int(os.getenv("DB_PORT", "5432"))
+    port: int = field(default_factory=lambda: _parse_port(os.getenv("DB_PORT", "5432"), 5432))
     
     # Database name - which database to connect to
     # PostgreSQL can have multiple databases on the same server
@@ -65,7 +80,7 @@ class RedisConfig:
     host: str = os.getenv("REDIS_HOST", "localhost")
     
     # Redis server port (default is 6379)
-    port: int = int(os.getenv("REDIS_PORT", "6379"))
+    port: int = field(default_factory=lambda: _parse_port(os.getenv("REDIS_PORT", "6379"), 6379))
     
     # Redis database number (Redis supports multiple logical databases, 0-15)
     # We use database 0 by default
@@ -91,7 +106,7 @@ class MongoDBConfig:
     host: str = os.getenv("MONGODB_HOST", "localhost")
     
     # MongoDB server port (default is 27017)
-    port: int = int(os.getenv("MONGODB_PORT", "27017"))
+    port: int = field(default_factory=lambda: _parse_port(os.getenv("MONGODB_PORT", "27017"), 27017))
     
     # Database name - which database to use for audit logs
     name: str = os.getenv("MONGODB_DB", "audit_db")
