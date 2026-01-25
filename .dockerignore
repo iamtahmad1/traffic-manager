@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+venv/
+env/
+ENV/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Architecture
+architecture/
+
+# Scripts
+scripts/
+
+# Datastore
+datastore/
+
+# CI/CD
+.github/
+
+# Other
+.DS_Store
+*.log
+.pytest_cache
+.coverage
+htmlcov/

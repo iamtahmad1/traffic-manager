@@ -33,7 +33,7 @@ Thumbs.db
 *.swp
 
 # =========================
-# Docker
+# Docker (datastore only)
 # =========================
 docker-compose.override.yml
 

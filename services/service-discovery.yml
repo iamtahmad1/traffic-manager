@@ -1,0 +1,150 @@
+# Service Discovery Configuration
+# This file defines service endpoints for service mesh and service discovery
+# Can be used with Consul, Eureka, Kubernetes services, or service mesh (Istio/Linkerd)
+
+services:
+  route-resolution-service:
+    name: route-resolution-service
+    port: 8001
+    protocol: http
+    health_check: /health
+    readiness_check: /health/ready
+    liveness_check: /health/live
+    endpoints:
+      - path: /api/v1/routes/resolve
+        method: GET
+        description: Resolve route endpoint URL
+      - path: /api/v1/audit/route
+        method: GET
+        description: Get route audit history
+      - path: /api/v1/audit/recent
+        method: GET
+        description: Get recent audit events
+      - path: /api/v1/audit/action
+        method: GET
+        description: Get audit events by action
+      - path: /api/v1/audit/time-range
+        method: GET
+        description: Get audit events in time range
+    tags:
+      - read-path
+      - high-throughput
+      - cache-optimized
+    metadata:
+      service_type: api
+      consistency: eventual
+      cache_enabled: true
+
+  route-management-service:
+    name: route-management-service
+    port: 8002
+    protocol: http
+    health_check: /health
+    readiness_check: /health/ready
+    liveness_check: /health/live
+    endpoints:
+      - path: /api/v1/routes
+        method: POST
+        description: Create new route
+      - path: /api/v1/routes/activate
+        method: POST
+        description: Activate a route
+      - path: /api/v1/routes/deactivate
+        method: POST
+        description: Deactivate a route
+    tags:
+      - write-path
+      - transactional
+      - database-heavy
+    metadata:
+      service_type: api
+      consistency: strong
+      requires_transaction: true
+
+  cache-invalidation-consumer:
+    name: cache-invalidation-consumer
+    port: null  # Consumer service, no HTTP port
+    protocol: kafka
+    kafka_topic: route-events
+    consumer_group: traffic-manager-cache_invalidation
+    tags:
+      - consumer
+      - cache-management
+      - kafka
+    metadata:
+      service_type: consumer
+      processing_type: async
+
+  cache-warming-consumer:
+    name: cache-warming-consumer
+    port: null  # Consumer service, no HTTP port
+    protocol: kafka
+    kafka_topic: route-events
+    consumer_group: traffic-manager-cache_warming
+    tags:
+      - consumer
+      - cache-management
+      - kafka
+    metadata:
+      service_type: consumer
+      processing_type: async
+
+  audit-consumer:
+    name: audit-consumer
+    port: null  # Consumer service, no HTTP port
+    protocol: kafka
+    kafka_topic: route-events
+    consumer_group: traffic-manager-audit_log
+    tags:
+      - consumer
+      - audit
+      - kafka
+      - mongodb
+    metadata:
+      service_type: consumer
+      processing_type: async
+
+# Service Mesh Configuration (for Istio/Linkerd)
+service_mesh:
+  # Traffic policies
+  traffic_policies:
+    route-resolution-service:
+      timeout: 30s
+      retries:
+        attempts: 3
+        per_try_timeout: 10s
+      circuit_breaker:
+        consecutive_errors: 5
+        interval: 30s
+        base_ejection_time: 30s
+      outlier_detection:
+        consecutive_5xx: 5
+        interval: 30s
+        base_ejection_time: 30s
+
+    route-management-service:
+      timeout: 60s
+      retries:
+        attempts: 2
+        per_try_timeout: 30s
+      circuit_breaker:
+        consecutive_errors: 3
+        interval: 30s
+        base_ejection_time: 60s
+
+  # Load balancing
+  load_balancing:
+    route-resolution-service:
+      policy: round_robin
+      locality_aware: true
+    route-management-service:
+      policy: least_conn
+      locality_aware: true
+
+  # Service discovery
+  discovery:
+    type: kubernetes  # or consul, eureka, etcd
+    namespace: traffic-manager
+    labels:
+      app: traffic-manager
+      version: v1
